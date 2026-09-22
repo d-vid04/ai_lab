@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 0.8.1 — 2026-09-22
+- Softer in-flight whoosh: about 10 dB quieter (new `WHIZZ_VOLUME`), a broad low filter
+  instead of a narrow high one (a rush of air, not a hiss), a lower pitch range
+  (250–1100 Hz, was 300–2200 Hz), a fainter whistle, and a gentle fade in and out.
+
 ## 0.8.0 — 2026-09-22
 - Sound effects, all synthesised with the Web Audio API in the file (no audio files): a cannon
   boom; a whoosh + whistle that follows the ball (the pitch drops as it falls); a deep blast for

@@ -115,7 +115,7 @@
 "use strict";
 
 // ===== CONFIG =====
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 
 const W = 1600;
 const H = 900;
@@ -173,6 +173,7 @@ const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
 const DEBRIS_LIFE = 1.5;
 const CLOUD_SPEED = 6;
 const MASTER_VOLUME = 0.7;
+const WHIZZ_VOLUME = 0.35;        // in-flight whoosh, relative to the other effects
 const IMPACT_MIN_SPEED = 70;      // units/s closing speed before a brick collision makes a sound
 const IMPACT_SOUND_GAP = 0.03;    // s between collision sounds of one kind (rubble is noisy)
 const RESET_BUTTON = { x: W - 28 - 112, y: 74, w: 112, h: 34 }; // under the status pill
@@ -1023,7 +1024,7 @@ function startWhizz(audio) {
   src.loop = true;
   const filter = ctx.createBiquadFilter();
   filter.type = "bandpass";
-  filter.Q.value = 6;
+  filter.Q.value = 1.2; // broad band = soft rush of air, not a piercing hiss
   const noiseGain = ctx.createGain();
   noiseGain.gain.value = 0;
   const osc = ctx.createOscillator();
@@ -1048,8 +1049,8 @@ function stopWhizz(audio) {
   audio.whizz = null;
 }
 
-// Whoosh + whistle that follows the ball: louder when fast, and the pitch drops as it
-// falls, like a cartoon bomb.
+// Soft whoosh + faint whistle that follows the ball: a little louder when fast, and the pitch
+// drops gently as it falls. Kept low and dark so it sits under the booms and blasts.
 function syncWhizz(audio, body) {
   if (body && !audio.whizz) startWhizz(audio);
   if (!body && audio.whizz) stopWhizz(audio);
@@ -1057,11 +1058,11 @@ function syncWhizz(audio, body) {
   const w = audio.whizz;
   const t = audio.ctx.currentTime;
   const speed = Math.hypot(body.vx, body.vy);
-  const pitch = clamp(520 + speed * 0.55 - body.vy * 0.45, 300, 2200);
-  w.filter.frequency.setTargetAtTime(pitch * 1.8, t, 0.03);
-  w.osc.frequency.setTargetAtTime(pitch, t, 0.03);
-  w.noiseGain.gain.setTargetAtTime(0.05 + (speed / MAX_SPEED) * 0.12, t, 0.05);
-  w.oscGain.gain.setTargetAtTime(0.035, t, 0.05);
+  const pitch = clamp(380 + speed * 0.3 - body.vy * 0.25, 250, 1100);
+  w.filter.frequency.setTargetAtTime(pitch * 0.9, t, 0.06);
+  w.osc.frequency.setTargetAtTime(pitch, t, 0.06);
+  w.noiseGain.gain.setTargetAtTime(WHIZZ_VOLUME * (0.05 + (speed / MAX_SPEED) * 0.1), t, 0.15);
+  w.oscGain.gain.setTargetAtTime(WHIZZ_VOLUME * 0.03, t, 0.15);
   w.pan.pan.setTargetAtTime(panFor(body.x), t, 0.05);
 }
 
