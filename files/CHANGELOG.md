@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 0.8.0 — 2026-09-22
+- Sound effects, all synthesised with the Web Audio API in the file (no audio files): a cannon
+  boom; a whoosh + whistle that follows the ball (the pitch drops as it falls); a deep blast for
+  ground hits; a shorter, brighter blast with clattering shrapnel for brick hits; a ceramic
+  clack for brick-on-brick collisions and a duller thock for brick-on-ground. Collision sounds
+  are driven by new physics contacts, scale with impact speed, are panned by x, and are
+  throttled so a collapse doesn't stack hundreds of voices.
+- Esc opens a pause menu: the simulation and sound freeze, and the cannon ignores the mouse and
+  keys. It offers Resume, Reset game, Past records (round, time, shots, best marked ★) and a
+  Sound on/off toggle.
+- Records are kept in memory for the session only (AGENTS.md: no storage). Time counts from the
+  first shot to the building coming down. The HUD and win card now show the time.
+- `advanceBody` now reports `"brick"` / `"ground"` instead of `"hit"`, so the right sound plays.
+- Self-tests T18 (win makes a session record, reset keeps it) and T19 (collision events fire for
+  real impacts and stay silent for the resting building). T9 now expects `"ground"`.
+
 ## 0.7.1 — 2026-09-22
 - Added an on-canvas **↻ RESET** button below the status pill. It does the same as R: new
   terrain, a new building, shots back to 0. The preview toggle and held keys carry over.

@@ -5,7 +5,7 @@
   Date:   2026-09-22
   Class:  CS 4500
   Agent:  Claude Code Opus 5.5, High
-  Other AI used: [e.g. Claude in browser for the spec in instructions.md]
+  Other AI used: Claude Opus 5.5 in browser for spec sheets and instructions
   How to run: open this file in any modern browser (Chrome, Firefox, Edge, Safari).
   Self-tests: open with #test at the end of the URL.
   Version: see VERSION constant below.
@@ -37,16 +37,85 @@
   #test-panel .pass { color: #1b7f55; }
   #test-panel .fail { color: #c0392b; }
   #test-panel .total { margin-top: 6px; font-weight: 700; }
+  #menu {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(15, 27, 45, 0.45);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #menu[hidden] { display: none; }
+  .menu-card {
+    width: min(340px, calc(100% - 32px));
+    padding: 20px; border-radius: 18px;
+    background: #ffffff; color: #1f2d4a;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  .menu-card h2 {
+    margin: 2px 4px 14px; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .menu-card h2::before {
+    content: ""; width: 9px; height: 9px; border-radius: 50%; background: #9aa5a9;
+  }
+  .menu-card button {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; margin-top: 8px; padding: 11px 14px;
+    border: 1.5px solid rgba(31, 45, 74, 0.15); border-radius: 12px;
+    background: #ffffff; color: #1f2d4a;
+    font: 600 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    cursor: pointer;
+  }
+  .menu-card button:hover, .menu-card button:focus-visible {
+    background: #fdf1e7; border-color: #e76f51; outline: none;
+  }
+  .menu-card kbd {
+    font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: 2px 6px; border-radius: 6px; background: #eef2f4; color: #51607a;
+  }
+  .menu-card table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .menu-card th {
+    text-align: left; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #6b778c; padding: 0 6px 6px;
+  }
+  .menu-card td {
+    padding: 7px 6px; border-top: 1px solid #edf0f2; font-variant-numeric: tabular-nums;
+  }
+  .menu-card tr.best td { color: #c4532f; font-weight: 700; }
+  .menu-card .records { max-height: 260px; overflow: auto; }
+  .menu-card .empty { margin: 4px 4px 6px; color: #6b778c; font-size: 14px; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <div id="test-panel" hidden></div>
+<div id="menu" hidden>
+  <div class="menu-card" role="dialog" aria-modal="true" aria-labelledby="menu-title">
+    <section data-view="main">
+      <h2 id="menu-title">Paused</h2>
+      <button type="button" data-action="resume">Resume <kbd>Esc</kbd></button>
+      <button type="button" data-action="reset">Reset game <kbd>R</kbd></button>
+      <button type="button" data-action="records">Past records</button>
+      <button type="button" data-action="sound">Sound <kbd id="sound-state">On</kbd></button>
+    </section>
+    <section data-view="records" hidden>
+      <h2>Building-down records</h2>
+      <p class="empty" id="records-empty">No building knocked down yet this session.</p>
+      <div class="records">
+        <table id="records-table" hidden>
+          <thead><tr><th>Round</th><th>Time</th><th>Shots</th></tr></thead>
+          <tbody id="records-body"></tbody>
+        </table>
+      </div>
+      <button type="button" data-action="back">Back</button>
+    </section>
+  </div>
+</div>
 <script>
 "use strict";
 
 // ===== CONFIG =====
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 
 const W = 1600;
 const H = 900;
@@ -103,6 +172,9 @@ const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
 
 const DEBRIS_LIFE = 1.5;
 const CLOUD_SPEED = 6;
+const MASTER_VOLUME = 0.7;
+const IMPACT_MIN_SPEED = 70;      // units/s closing speed before a brick collision makes a sound
+const IMPACT_SOUND_GAP = 0.03;    // s between collision sounds of one kind (rubble is noisy)
 const RESET_BUTTON = { x: W - 28 - 112, y: 74, w: 112, h: 34 }; // under the status pill
 
 const COLORS = {
@@ -135,6 +207,7 @@ const STATUS = {
   IN_FLIGHT: { text: "IN FLIGHT", dot: "#e9a23b" },
   RELOADING: { text: "RELOADING", dot: "#9aa5a9" },
   WON: { text: "BUILDING DOWN", dot: "#e76f51" },
+  PAUSED: { text: "PAUSED", dot: "#9aa5a9" },
 };
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
@@ -330,7 +403,7 @@ function domeRows(i) {
 }
 
 function createWorld() {
-  return { bricks: [], arbiters: new Map(), nextId: 1 };
+  return { bricks: [], arbiters: new Map(), impacts: [], nextId: 1 };
 }
 
 function addBrick(world, x, y, color) {
@@ -381,11 +454,12 @@ const TERRAIN_BODY = { x: 0, y: 0, vx: 0, vy: 0, w: 0, invMass: 0, invI: 0 };
 const BOX_SAMPLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
 
 function stepWorld(world, terrain, dt) {
+  world.impacts = [];
   updateArbiters(world, terrain);
   for (const b of world.bricks) b.vy += GRAVITY * dt;
   // Solve from the ground up so support reaches the top of tall stacks in fewer iterations.
   const arbiters = [...world.arbiters.values()].sort((p, q) => arbiterDepth(q) - arbiterDepth(p));
-  for (const arb of arbiters) preStep(arb, 1 / dt);
+  for (const arb of arbiters) preStep(arb, 1 / dt, world.impacts);
   for (let i = 0; i < SOLVER_ITERATIONS; i++) {
     for (const arb of arbiters) applyImpulses(arb);
   }
@@ -433,6 +507,7 @@ function mergeArbiter(world, seen, key, b1, b2, contacts, friction) {
       if (prev) {
         c.Pn = prev.Pn;
         c.Pt = prev.Pt;
+        c.isNew = false;
       }
     }
   }
@@ -457,7 +532,7 @@ function terrainContacts(terrain, b) {
 }
 
 function makeContact(px, py, nx, ny, separation) {
-  return { px, py, nx, ny, separation, Pn: 0, Pt: 0 };
+  return { px, py, nx, ny, separation, Pn: 0, Pt: 0, isNew: true };
 }
 
 // Box vs. box: find the axis of least penetration, then clip the other box's most
@@ -563,11 +638,21 @@ function applyPairImpulse(arb, c, px, py) {
   b2.w += b2.invI * (c.r2x * py - c.r2y * px);
 }
 
-function preStep(arb, invDt) {
+// A contact that did not exist last step and is closing fast is a collision worth hearing.
+function recordImpact(arb, c, impacts) {
+  const [dvx, dvy] = relativeVelocity(arb, c);
+  const vn = dvx * c.nx + dvy * c.ny;
+  if (vn < -IMPACT_MIN_SPEED) {
+    impacts.push({ x: c.px, speed: -vn, kind: arb.b1 === TERRAIN_BODY ? "ground" : "brick" });
+  }
+}
+
+function preStep(arb, invDt, impacts) {
   const { b1, b2 } = arb;
   for (const c of arb.contacts) {
     c.r1x = c.px - b1.x; c.r1y = c.py - b1.y;
     c.r2x = c.px - b2.x; c.r2y = c.py - b2.y;
+    if (c.isNew) recordImpact(arb, c, impacts);
     const tx = c.ny, ty = -c.nx;
     const rn1 = c.r1x * c.nx + c.r1y * c.ny, rn2 = c.r2x * c.nx + c.r2y * c.ny;
     const rt1 = c.r1x * tx + c.r1y * ty, rt2 = c.r2x * tx + c.r2y * ty;
@@ -724,13 +809,13 @@ function isOutOfWorld(body) {
 }
 
 // One DT of flight, split so no sub-step moves more than MAX_STEP (no tunnelling).
-// Shared by the real projectile and the aim preview. Returns "hit", "out" or null.
+// Shared by the real projectile and the aim preview. Returns "brick", "ground", "out" or null.
 function advanceBody(game, body, dt) {
   const n = Math.max(1, Math.ceil((Math.hypot(body.vx, body.vy) * dt) / MAX_STEP));
   for (let i = 0; i < n; i++) {
     stepBody(body, dt / n);
-    if (ballHitsBrick(game.world.bricks, body)) return "hit";
-    if (ballHitsTerrain(game.terrain, body)) return "hit";
+    if (ballHitsBrick(game.world.bricks, body)) return "brick";
+    if (ballHitsTerrain(game.terrain, body)) return "ground";
     if (isOutOfWorld(body)) return "out";
   }
   return null;
@@ -743,7 +828,7 @@ function computePreview(game) {
   for (let i = 0; i < steps; i++) {
     const result = advanceBody(game, body, DT);
     points.push({ x: body.x, y: body.y });
-    if (result === "hit") return { points, steps, hit: { x: body.x, y: body.y } };
+    if (result === "brick" || result === "ground") return { points, steps, hit: { x: body.x, y: body.y } };
     if (result === "out") break;
   }
   return { points, steps, hit: null };
@@ -755,11 +840,13 @@ function updateProjectile(game, dt) {
   const result = advanceBody(game, body, dt);
   if (!result) return;
   game.projectile = null;
-  if (result === "hit") explode(game, body.x, body.y);
-  else setState(game, "RELOADING");
+  if (result === "out") setState(game, "RELOADING");
+  else explode(game, body.x, body.y, result);
 }
 
-function explode(game, x, y) {
+// `hit` is "brick" or "ground" and only picks the sound.
+function explode(game, x, y, hit) {
+  if (game.audio) (hit === "brick" ? playBrickHitSound : playGroundHitSound)(game.audio, x);
   addCrater(game.terrain, x, y, CRATER_R);
   destroyBricksNear(game, x, y);
   blastBricks(game.world, x, y, game.rng);
@@ -815,6 +902,169 @@ function updateDebris(game, dt) {
   game.debris = game.debris.filter((p) => p.age < DEBRIS_LIFE);
 }
 
+// ===== AUDIO =====
+// Every sound is synthesised with the Web Audio API, so there are no audio files: filtered
+// noise for blasts, whooshes and grit, pitched oscillators for thumps, whistles and clacks.
+// The context is created on the first click or key press (browsers block audio before that).
+
+function createAudio(ctx) {
+  const master = ctx.createGain();
+  master.gain.value = MASTER_VOLUME;
+  const limiter = ctx.createDynamicsCompressor(); // keeps a pile of clacks from clipping
+  master.connect(limiter);
+  limiter.connect(ctx.destination);
+  const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  return { ctx, master, noise, enabled: true, whizz: null, lastImpact: { brick: -1, ground: -1 } };
+}
+
+function setSoundEnabled(audio, enabled) {
+  audio.enabled = enabled;
+  audio.master.gain.setTargetAtTime(enabled ? MASTER_VOLUME : 0, audio.ctx.currentTime, 0.02);
+}
+
+function panFor(x) {
+  return clamp((x / W) * 2 - 1, -1, 1) * 0.7;
+}
+
+// Percussive envelope → stereo position → master. Sources connect into the returned node.
+function voiceOut(audio, x, peak, decay, t0) {
+  const gain = audio.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.005 + decay);
+  const pan = audio.ctx.createStereoPanner();
+  pan.pan.value = panFor(x);
+  gain.connect(pan);
+  pan.connect(audio.master);
+  return gain;
+}
+
+function noiseBurst(audio, x, { type, from, to, q = 1, peak, decay, t0 = audio.ctx.currentTime }) {
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = type;
+  filter.Q.value = q;
+  filter.frequency.setValueAtTime(from, t0);
+  filter.frequency.exponentialRampToValueAtTime(to, t0 + decay);
+  src.connect(filter);
+  filter.connect(voiceOut(audio, x, peak, decay, t0));
+  src.start(t0, Math.random() * 0.5);
+  src.stop(t0 + decay + 0.05);
+}
+
+function tone(audio, x, { wave = "sine", from, to, peak, decay, t0 = audio.ctx.currentTime }) {
+  const osc = audio.ctx.createOscillator();
+  osc.type = wave;
+  osc.frequency.setValueAtTime(from, t0);
+  osc.frequency.exponentialRampToValueAtTime(to, t0 + decay);
+  osc.connect(voiceOut(audio, x, peak, decay, t0));
+  osc.start(t0);
+  osc.stop(t0 + decay + 0.05);
+}
+
+function playFireSound(audio, x) {
+  noiseBurst(audio, x, { type: "lowpass", from: 2400, to: 180, peak: 0.9, decay: 0.45 });
+  tone(audio, x, { from: 120, to: 36, peak: 0.9, decay: 0.4 });
+  tone(audio, x, { wave: "triangle", from: 420, to: 90, peak: 0.3, decay: 0.12 }); // sharp crack
+}
+
+function playGroundHitSound(audio, x) {
+  const t = audio.ctx.currentTime;
+  noiseBurst(audio, x, { type: "lowpass", from: 1400, to: 110, peak: 1, decay: 0.8 });
+  tone(audio, x, { from: 80, to: 28, peak: 0.9, decay: 0.55 });
+  noiseBurst(audio, x, { type: "bandpass", from: 700, to: 250, q: 0.8, peak: 0.3, decay: 0.5, t0: t + 0.05 });
+}
+
+// Same blast as the ground hit, but shorter and brighter, with bits of brick clattering down.
+function playBrickHitSound(audio, x) {
+  const t = audio.ctx.currentTime;
+  noiseBurst(audio, x, { type: "lowpass", from: 2800, to: 300, peak: 0.9, decay: 0.55 });
+  tone(audio, x, { from: 110, to: 40, peak: 0.75, decay: 0.35 });
+  for (let i = 0; i < 6; i++) {
+    playClack(audio, x + (Math.random() - 0.5) * 80, 0.4 + Math.random() * 0.4, t + 0.04 + Math.random() * 0.35);
+  }
+}
+
+// Brick on brick: a short hollow ceramic knock.
+function playClack(audio, x, strength, t0) {
+  const f = 650 + Math.random() * 500;
+  tone(audio, x, { wave: "triangle", from: f, to: f * 0.7, peak: 0.5 * strength, decay: 0.07, t0 });
+  noiseBurst(audio, x, { type: "bandpass", from: 3200, to: 1800, q: 2.5, peak: 0.35 * strength, decay: 0.05, t0 });
+}
+
+// Brick on ground: a duller, lower thock.
+function playThock(audio, x, strength, t0) {
+  tone(audio, x, { from: 190 + Math.random() * 40, to: 95, peak: 0.75 * strength, decay: 0.1, t0 });
+  noiseBurst(audio, x, { type: "lowpass", from: 900, to: 200, peak: 0.4 * strength, decay: 0.08, t0 });
+}
+
+// One sound per kind per IMPACT_SOUND_GAP, voiced by the hardest hit, so a collapsing
+// building clatters without stacking hundreds of voices.
+function playCollisionSounds(audio, impacts) {
+  const now = audio.ctx.currentTime;
+  for (const kind of ["brick", "ground"]) {
+    if (now - audio.lastImpact[kind] < IMPACT_SOUND_GAP) continue;
+    let best = null;
+    for (const hit of impacts) if (hit.kind === kind && (!best || hit.speed > best.speed)) best = hit;
+    if (!best) continue;
+    audio.lastImpact[kind] = now;
+    const strength = clamp((best.speed - IMPACT_MIN_SPEED) / 400, 0.08, 1);
+    (kind === "brick" ? playClack : playThock)(audio, best.x, strength, now);
+  }
+}
+
+function startWhizz(audio) {
+  const ctx = audio.ctx;
+  const src = ctx.createBufferSource();
+  src.buffer = audio.noise;
+  src.loop = true;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.Q.value = 6;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.value = 0;
+  const osc = ctx.createOscillator();
+  const oscGain = ctx.createGain();
+  oscGain.gain.value = 0;
+  const pan = ctx.createStereoPanner();
+  src.connect(filter).connect(noiseGain).connect(pan);
+  osc.connect(oscGain).connect(pan);
+  pan.connect(audio.master);
+  src.start();
+  osc.start();
+  audio.whizz = { src, osc, filter, noiseGain, oscGain, pan };
+}
+
+function stopWhizz(audio) {
+  const w = audio.whizz;
+  const t = audio.ctx.currentTime;
+  w.noiseGain.gain.setTargetAtTime(0, t, 0.02);
+  w.oscGain.gain.setTargetAtTime(0, t, 0.02);
+  w.src.stop(t + 0.15);
+  w.osc.stop(t + 0.15);
+  audio.whizz = null;
+}
+
+// Whoosh + whistle that follows the ball: louder when fast, and the pitch drops as it
+// falls, like a cartoon bomb.
+function syncWhizz(audio, body) {
+  if (body && !audio.whizz) startWhizz(audio);
+  if (!body && audio.whizz) stopWhizz(audio);
+  if (!body) return;
+  const w = audio.whizz;
+  const t = audio.ctx.currentTime;
+  const speed = Math.hypot(body.vx, body.vy);
+  const pitch = clamp(520 + speed * 0.55 - body.vy * 0.45, 300, 2200);
+  w.filter.frequency.setTargetAtTime(pitch * 1.8, t, 0.03);
+  w.osc.frequency.setTargetAtTime(pitch, t, 0.03);
+  w.noiseGain.gain.setTargetAtTime(0.05 + (speed / MAX_SPEED) * 0.12, t, 0.05);
+  w.oscGain.gain.setTargetAtTime(0.035, t, 0.05);
+  w.pan.pan.setTargetAtTime(panFor(body.x), t, 0.05);
+}
+
 // ===== GAME STATE =====
 let game = null;
 
@@ -844,22 +1094,29 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
     state: "READY",
     stateTime: 0,
     shots: 0,
+    elapsed: 0,
+    paused: false,
     startBricks: world.bricks.length,
     preview: null,
     showPreview: true,
     input: { keys: new Set(), hoverReset: false },
     view: null,
+    audio: null,
     loop: { last: 0, acc: 0 },
+    session: { round: 1, records: [] }, // in memory only: gone when the page closes
   };
 }
 
-// New terrain and building; the canvas, input and loop carry over.
+// New terrain and building; the canvas, input, loop, sound and session records carry over.
 function resetGame(old) {
   const fresh = createGame({ seed: newSeed() });
   fresh.view = old.view;
   fresh.input = old.input;
   fresh.loop = old.loop;
+  fresh.audio = old.audio;
   fresh.showPreview = old.showPreview;
+  fresh.session = old.session;
+  fresh.session.round += 1;
   return fresh;
 }
 
@@ -875,6 +1132,7 @@ function isBuildingDown(game) {
 function fire(game) {
   if (game.state !== "READY") return;
   game.projectile = launchBody(game.cannon);
+  if (game.audio) playFireSound(game.audio, game.cannon.x);
   game.shots += 1;
   setState(game, "IN_FLIGHT");
 }
@@ -882,10 +1140,17 @@ function fire(game) {
 function updateState(game, dt) {
   game.stateTime += dt;
   if (game.state === "RELOADING" && game.stateTime >= RELOAD_TIME) {
-    setState(game, isBuildingDown(game) ? "WON" : "READY");
+    if (isBuildingDown(game)) winRound(game);
+    else setState(game, "READY");
   } else if (game.state === "READY" && isBuildingDown(game)) {
-    setState(game, "WON"); // a late collapse after the reload still counts
+    winRound(game); // a late collapse after the reload still counts
   }
+}
+
+// The clock runs from the first shot, so time spent lining up that shot is free.
+function winRound(game) {
+  setState(game, "WON");
+  game.session.records.push({ round: game.session.round, time: game.elapsed, shots: game.shots });
 }
 
 function updateClouds(clouds, dt) {
@@ -896,10 +1161,12 @@ function updateClouds(clouds, dt) {
 }
 
 function update(game, dt) {
+  if (game.shots > 0 && game.state !== "WON") game.elapsed += dt;
   updateClouds(game.clouds, dt);
   applyKeyAim(game, dt);
   updateCannonFall(game.cannon, game.terrain, dt);
   stepWorld(game.world, game.terrain, dt);
+  if (game.audio) playCollisionSounds(game.audio, game.world.impacts);
   removeLostBricks(game.world);
   updateProjectile(game, dt);
   updateDebris(game, dt);
@@ -1230,6 +1497,7 @@ function drawHud(ctx, game) {
     `Angle ${Math.round(c.angle)}°`,
     `Power ${Math.round(c.power * 100)}%`,
     `Shots ${game.shots}`,
+    `Time ${formatTime(game.elapsed)}`,
     `Bricks ${countStanding(game.world)}/${game.startBricks}`,
     `v${VERSION}`,
   ];
@@ -1240,7 +1508,13 @@ function drawHud(ctx, game) {
   ctx.fillText(parts.join("  ·  "), 28, H - 30);
 }
 
-function drawWinCard(ctx, shots) {
+function formatTime(seconds) {
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const m = Math.floor(seconds / 60);
+  return `${m}:${(seconds - m * 60).toFixed(1).padStart(4, "0")}`;
+}
+
+function drawWinCard(ctx, shots, seconds) {
   const w = 440;
   const h = 132;
   const x = (W - w) / 2;
@@ -1258,7 +1532,7 @@ function drawWinCard(ctx, shots) {
   ctx.fillText(`Building down in ${shots} shot${shots === 1 ? "" : "s"}`, W / 2, y + 54);
   ctx.fillStyle = COLORS.hud;
   ctx.font = `500 17px ${FONT}`;
-  ctx.fillText("Press R to play again", W / 2, y + 94);
+  ctx.fillText(`Time ${formatTime(seconds)}  ·  Press R to play again`, W / 2, y + 94);
 }
 
 function render(game) {
@@ -1274,10 +1548,10 @@ function render(game) {
   if (game.projectile) drawBall(ctx, game.projectile);
   drawDebris(ctx, game.debris);
   if (game.state === "READY" && game.showPreview && game.preview) drawPreview(ctx, game.preview);
-  drawStatusPill(ctx, game.state);
+  drawStatusPill(ctx, game.paused ? "PAUSED" : game.state);
   drawResetButton(ctx, game.input.hoverReset);
   drawHud(ctx, game);
-  if (game.state === "WON") drawWinCard(ctx, game.shots);
+  if (game.state === "WON") drawWinCard(ctx, game.shots, game.elapsed);
 }
 
 // ===== INPUT =====
@@ -1296,7 +1570,23 @@ function toWorld(canvas, e) {
   };
 }
 
+// Browsers only allow audio after a user gesture, so the first click or key creates it.
+function ensureAudio() {
+  if (!game.audio) game.audio = createAudio(new AudioContext());
+  if (!game.paused && game.audio.ctx.state === "suspended") game.audio.ctx.resume();
+}
+
 function onKeyDown(e) {
+  ensureAudio();
+  if (e.code === "Escape") {
+    e.preventDefault();
+    if (!e.repeat) toggleMenu();
+    return;
+  }
+  if (game.paused) {
+    if (e.code === "KeyR" && !e.repeat) onMenuAction("reset");
+    return; // menu buttons handle their own Enter/Space
+  }
   if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
   if (KEY_ACTIONS[e.code]) game.input.keys.add(KEY_ACTIONS[e.code]);
   if (e.repeat) return;
@@ -1316,13 +1606,15 @@ function isOnResetButton(p) {
 
 function installInput(canvas) {
   canvas.addEventListener("pointermove", (e) => {
+    if (game.paused) return;
     const p = toWorld(canvas, e);
     game.input.hoverReset = isOnResetButton(p);
     canvas.style.cursor = game.input.hoverReset ? "pointer" : "crosshair";
     if (!game.input.hoverReset) aimAtPoint(game.cannon, p.x, p.y);
   });
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || game.paused) return;
+    ensureAudio();
     const p = toWorld(canvas, e);
     if (isOnResetButton(p)) {
       game = resetGame(game);
@@ -1336,10 +1628,87 @@ function installInput(canvas) {
   window.addEventListener("blur", () => game.input.keys.clear());
 }
 
+// ===== MENU =====
+// Esc pauses: the simulation and sound stop, and the cannon ignores the mouse and keys.
+
+function openMenu() {
+  game.paused = true;
+  game.input.keys.clear();
+  game.input.hoverReset = false;
+  if (game.audio) game.audio.ctx.suspend();
+  showMenuView("main");
+  document.getElementById("menu").hidden = false;
+  document.querySelector('#menu [data-action="resume"]').focus();
+}
+
+function closeMenu() {
+  document.getElementById("menu").hidden = true;
+  game.paused = false;
+  if (game.audio) game.audio.ctx.resume();
+  document.activeElement.blur();
+}
+
+function toggleMenu() {
+  if (game.paused) closeMenu();
+  else openMenu();
+}
+
+function showMenuView(name) {
+  for (const section of document.querySelectorAll("#menu [data-view]")) {
+    section.hidden = section.dataset.view !== name;
+  }
+  if (name === "records") renderRecords(game.session.records);
+  document.getElementById("sound-state").textContent = game.audio && !game.audio.enabled ? "Off" : "On";
+  const first = document.querySelector(`#menu [data-view="${name}"] button`);
+  first.focus();
+}
+
+function renderRecords(records) {
+  const body = document.getElementById("records-body");
+  body.replaceChildren();
+  const best = Math.min(...records.map((r) => r.time));
+  for (const r of records) {
+    const row = document.createElement("tr");
+    if (records.length > 1 && r.time === best) row.className = "best";
+    for (const text of [`#${r.round}${row.className ? " ★" : ""}`, formatTime(r.time), String(r.shots)]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    body.appendChild(row);
+  }
+  document.getElementById("records-table").hidden = records.length === 0;
+  document.getElementById("records-empty").hidden = records.length > 0;
+}
+
+function onMenuAction(action) {
+  if (action === "resume") closeMenu();
+  else if (action === "records") showMenuView("records");
+  else if (action === "back") showMenuView("main");
+  else if (action === "sound") {
+    setSoundEnabled(game.audio, !game.audio.enabled);
+    showMenuView("main");
+    document.querySelector('#menu [data-action="sound"]').focus();
+  } else if (action === "reset") {
+    closeMenu();
+    game = resetGame(game);
+  }
+}
+
+function installMenu() {
+  const menu = document.getElementById("menu");
+  menu.addEventListener("click", (e) => {
+    ensureAudio();
+    if (e.target === menu) closeMenu(); // click on the dimmed backdrop
+    const button = e.target.closest("button[data-action]");
+    if (button) onMenuAction(button.dataset.action);
+  });
+}
+
 // ===== LOOP =====
 function frame(now) {
   const loop = game.loop;
-  loop.acc += Math.min(0.1, (now - loop.last) / 1000);
+  if (!game.paused) loop.acc += Math.min(0.1, (now - loop.last) / 1000);
   loop.last = now;
   while (loop.acc >= DT) {
     update(game, DT);
@@ -1347,6 +1716,7 @@ function frame(now) {
   }
   // Bricks can move every step, so the arc is simply recomputed each frame while aiming.
   if (game.state === "READY" && game.showPreview) game.preview = computePreview(game);
+  if (game.audio) syncWhizz(game.audio, game.projectile);
   render(game);
   requestAnimationFrame(frame);
 }
@@ -1431,8 +1801,8 @@ const FLIGHT_TESTS = [
     let result = null;
     for (let i = 0; i < 200 && !result; i++) result = advanceBody(g, body, DT);
     const bottom = body.y + BALL_R;
-    return check(result === "hit" && bottom >= GROUND_Y && bottom - GROUND_Y <= 3,
-      `hit, bottom in [${GROUND_Y}, ${GROUND_Y + 3}]`, `${result}, bottom ${bottom.toFixed(2)}`);
+    return check(result === "ground" && bottom >= GROUND_Y && bottom - GROUND_Y <= 3,
+      `ground, bottom in [${GROUND_Y}, ${GROUND_Y + 3}]`, `${result}, bottom ${bottom.toFixed(2)}`);
   }],
   ["T10", "Preview impact point = real explosion point (±1)", () => {
     const g = testGame();
@@ -1490,7 +1860,7 @@ const BRICK_TESTS = [
   }],
   ["T16", "Blast at the building's base knocks bricks down", () => {
     const g = testGame(true);
-    explode(g, BUILDING_X - 50, GROUND_Y - 10);
+    explode(g, BUILDING_X - 50, GROUND_Y - 10, "ground");
     runWorld(g.world, g.terrain, 1.5);
     const standing = countStanding(g.world);
     return check(standing < g.startBricks - 20, `< ${g.startBricks - 20} standing`, `${standing} standing`);
@@ -1498,7 +1868,7 @@ const BRICK_TESTS = [
   ["T17", "Reset restores a fresh game after shots and craters", () => {
     const g = testGame(true);
     fire(g);
-    explode(g, BUILDING_X, GROUND_Y);
+    explode(g, BUILDING_X, GROUND_Y, "ground");
     g.showPreview = false;
     const r = resetGame(g);
     const ok = r.state === "READY" && r.shots === 0 && r.terrain.craters.length === 0 &&
@@ -1507,6 +1877,40 @@ const BRICK_TESTS = [
     return check(ok, "READY, 0 shots, 0 craters, all bricks standing, input kept",
       `${r.state}, ${r.shots} shots, ${r.terrain.craters.length} craters, ` +
       `${countStanding(r.world)}/${r.startBricks} standing`);
+  }],
+  ["T18", "Win adds a session record (time from first shot); reset keeps it", () => {
+    const g = testGame(true);
+    fire(g);
+    for (let i = 0; i < 240; i++) update(g, DT);
+    g.world.bricks = g.world.bricks.slice(0, 5); // building down
+    for (let i = 0; i < 240 && g.state !== "WON"; i++) update(g, DT);
+    const rec = g.session.records[0];
+    const r = resetGame(g);
+    const ok = g.state === "WON" && rec && rec.time > 2 && rec.shots === 1 && rec.round === 1 &&
+      r.session.records.length === 1 && r.session.round === 2 && r.elapsed === 0;
+    return check(ok, "WON, 1 record (>2 s, 1 shot), kept after reset as round 2",
+      `${g.state}, ${JSON.stringify(rec)}, records after reset ${r.session.records.length}, round ${r.session.round}`);
+  }],
+  ["T19", "Collision events: dropped brick hits ground and brick; resting building is silent", () => {
+    const t = createTerrain(false);
+    const w = createWorld();
+    addBrick(w, 1400, GROUND_Y - BRICK_H / 2, BRICK_COLORS[0]);
+    addBrick(w, 1400, GROUND_Y - 120, BRICK_COLORS[1]);
+    const drop = addBrick(w, 1300, GROUND_Y - 100, BRICK_COLORS[2]);
+    const kinds = new Set();
+    for (let i = 0; i < 120; i++) {
+      stepWorld(w, t, DT);
+      for (const hit of w.impacts) kinds.add(hit.kind);
+    }
+    const g = testGame(true);
+    let quiet = 0;
+    for (let i = 0; i < 240; i++) {
+      stepWorld(g.world, g.terrain, DT);
+      quiet += g.world.impacts.length;
+    }
+    const ok = kinds.has("ground") && kinds.has("brick") && quiet === 0 && drop.y > GROUND_Y - 10;
+    return check(ok, "ground + brick impacts, 0 from resting building",
+      `${[...kinds].join(", ") || "none"}; resting building ${quiet}`);
   }],
 ];
 
@@ -1550,6 +1954,7 @@ function boot() {
   resizeCanvas(game.view);
   window.addEventListener("resize", () => resizeCanvas(game.view));
   installInput(canvas);
+  installMenu();
   if (location.hash === "#test") showTestResults(runSelfTests());
   requestAnimationFrame((now) => {
     game.loop.last = now;
