@@ -1,0 +1,1563 @@
+<!--
+  Cannon vs. Building — AI Coding Lab
+  Name:   David Brown
+  uID:    u1422887
+  Date:   2026-09-22
+  Class:  CS 4500
+  Agent:  Claude Code Opus 5.5, High
+  Other AI used: [e.g. Claude in browser for the spec in instructions.md]
+  How to run: open this file in any modern browser (Chrome, Firefox, Edge, Safari).
+  Self-tests: open with #test at the end of the URL.
+  Version: see VERSION constant below.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cannon vs. Building</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0f1b2d; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #game {
+    display: block;
+    border-radius: 18px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #test-panel {
+    position: fixed; top: 12px; left: 12px;
+    max-width: 620px; max-height: calc(100% - 24px); overflow: auto;
+    padding: 10px 14px; border-radius: 10px;
+    background: rgba(255, 255, 255, 0.95); color: #1f2d4a;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  }
+  #test-panel .pass { color: #1b7f55; }
+  #test-panel .fail { color: #c0392b; }
+  #test-panel .total { margin-top: 6px; font-weight: 700; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="test-panel" hidden></div>
+<script>
+"use strict";
+
+// ===== CONFIG =====
+const VERSION = "0.7.1";
+
+const W = 1600;
+const H = 900;
+const GROUND_Y = 620;
+const BEDROCK = 20;
+const TERRAIN_RES = 2;
+const BUCKET = 64;
+
+const DT = 1 / 120;
+const MAX_STEP = 3;
+const GRAVITY = 900;
+const MAX_SPEED = 1150;
+const BALL_R = 7;
+const CRATER_R = 45;
+const BLAST_R = 42;
+const RELOAD_TIME = 0.8;
+const AIM_RANGE = 450;
+const PREVIEW_TIME = 0.9;
+const BRICK_W = 22;
+const BRICK_H = 13;
+const WIN_FRACTION = 0.10;
+
+const CANNON_X = 120;
+const CANNON_PIVOT_H = 24;
+const BARREL_LEN = 48;
+const ANGLE_MIN = 5;
+const ANGLE_MAX = 85;
+const POWER_MIN = 0.15;
+const POWER_MAX = 1;
+const ANGLE_RATE = 60;
+const POWER_RATE = 0.6;
+const DEFAULT_ANGLE = 35;
+const DEFAULT_POWER = 0.65;
+
+const BUILDING_X = 1420;
+const BUILDING_COLS = 12;
+
+// Rigid-body brick physics (replaces the grid support pass of spec §8.3/8.4).
+const BRICK_GAP = 1;              // side clearance so neighbouring columns don't rub
+const BRICK_DENSITY = 0.01;
+const BRICK_FRICTION = 0.6;
+const TERRAIN_FRICTION = 0.8;
+const SOLVER_ITERATIONS = 40;         // tall 14-brick columns need many passes to stay still
+const BIAS_FACTOR = 0.2;
+const ALLOWED_PENETRATION = 0.3;
+const MAX_CONTACT_DEPTH = 8;
+const CONTACT_MARGIN = 0.5;       // contacts start this far before touching (no flicker)
+const WARM_MATCH_DIST = 1;        // how close a contact must be to last step's to reuse its impulse
+const BLAST_PUSH_R = 130;         // bricks inside this radius get flung
+const BLAST_PUSH_SPEED = 520;     // speed kick at the blast centre, fading to 0 at the edge
+const BLAST_LIFT = 140;           // extra upward kick so rubble arcs like a cartoon
+const BLAST_SPIN = 9;             // rad/s of random spin at the centre
+const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
+
+const DEBRIS_LIFE = 1.5;
+const CLOUD_SPEED = 6;
+const RESET_BUTTON = { x: W - 28 - 112, y: 74, w: 112, h: 34 }; // under the status pill
+
+const COLORS = {
+  skyTop: "#cfeaec",
+  skyHorizon: "#eef6f2",
+  sun: "#f4faf7",
+  cloud: "rgba(255, 255, 255, 0.7)",
+  farHills: "#d5e8e1",
+  groundTop: "#72b8a3",
+  groundBottom: "#4d8c7d",
+  groundEdge: "#8fcbb7",
+  craterRim: "#3f7a6c",
+  bedrock: "#447f71",
+  navy: "#1f2d4a",
+  ink: "#0b1322",
+  barrelLight: "#41598a",
+  barrelBand: "#34466c",
+  wood: "#b0703f",
+  woodDark: "#8a5530",
+  woodLight: "#d69a62",
+  woodInk: "#3b2314",
+  brass: "#f6bd60",
+  brickInk: "#5a2415",
+  preview: "31, 45, 74",
+  hud: "rgba(31, 45, 74, 0.7)",
+};
+const BRICK_COLORS = ["#e76f51", "#ee8959", "#f4a261", "#f6bd60", "#e9c46a"];
+const STATUS = {
+  READY: { text: "READY TO FIRE", dot: "#2a9d8f" },
+  IN_FLIGHT: { text: "IN FLIGHT", dot: "#e9a23b" },
+  RELOADING: { text: "RELOADING", dot: "#9aa5a9" },
+  WON: { text: "BUILDING DOWN", dot: "#e76f51" },
+};
+const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+// ===== MATH UTILS =====
+function clamp(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function degToRad(d) {
+  return (d * Math.PI) / 180;
+}
+
+function radToDeg(r) {
+  return (r * 180) / Math.PI;
+}
+
+// mulberry32: tiny seeded PRNG so a seed always rebuilds the same building.
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Circle vs. rotated rectangle: bring the circle centre into the rectangle's frame, then clamp.
+function circleRectOverlap(cx, cy, r, rect) {
+  const c = Math.cos(rect.a);
+  const s = Math.sin(rect.a);
+  const dx = cx - rect.x;
+  const dy = cy - rect.y;
+  const lx = dx * c + dy * s;
+  const ly = -dx * s + dy * c;
+  const qx = clamp(lx, -rect.hw, rect.hw);
+  const qy = clamp(ly, -rect.hh, rect.hh);
+  return (lx - qx) ** 2 + (ly - qy) ** 2 < r * r;
+}
+
+// Mix a #rrggbb colour toward white (amt > 0) or black (amt < 0).
+function shadeColor(hex, amt) {
+  const target = amt > 0 ? 255 : 0;
+  const k = Math.abs(amt);
+  const ch = (i) => Math.round(lerp(parseInt(hex.slice(i, i + 2), 16), target, k));
+  return `rgb(${ch(1)}, ${ch(3)}, ${ch(5)})`;
+}
+
+// ===== TERRAIN =====
+function baseSurfaceY(x) {
+  const flatten = x < 1150 ? 1 : x > 1250 ? 0 : 1 - (x - 1150) / 100;
+  return (
+    GROUND_Y -
+    110 * Math.exp(-(((x - 400) / 75) ** 2)) +
+    28 * Math.exp(-(((x - 300) / 32) ** 2)) -
+    10 * Math.sin(x / 140) * flatten
+  );
+}
+
+// withLayer = false builds a headless terrain for self-tests (no offscreen canvas).
+function createTerrain(withLayer) {
+  const surface = new Float32Array(W + 1);
+  for (let x = 0; x <= W; x++) surface[x] = baseSurfaceY(x);
+  const terrain = { surface, craters: [], buckets: new Map(), layer: null };
+  if (withLayer) {
+    terrain.layer = document.createElement("canvas");
+    terrain.layer.width = W * TERRAIN_RES;
+    terrain.layer.height = H * TERRAIN_RES;
+    renderTerrainLayer(terrain);
+  }
+  return terrain;
+}
+
+function surfaceY(terrain, x) {
+  const cx = clamp(x, 0, W);
+  const i = Math.min(Math.floor(cx), W - 1);
+  return lerp(terrain.surface[i], terrain.surface[i + 1], cx - i);
+}
+
+function isSolid(terrain, x, y) {
+  if (x < 0 || x > W) return false;
+  if (y >= H - BEDROCK) return true;
+  if (y < surfaceY(terrain, x)) return false;
+  const bucket = terrain.buckets.get(Math.floor(x / BUCKET));
+  if (bucket) {
+    for (const c of bucket) {
+      if ((x - c.cx) ** 2 + (y - c.cy) ** 2 < c.r * c.r) return false;
+    }
+  }
+  return true;
+}
+
+function addCrater(terrain, cx, cy, r) {
+  const crater = { cx, cy, r };
+  terrain.craters.push(crater);
+  // A crater goes into every bucket its x-span touches, so isSolid only needs bucket(x).
+  const first = Math.floor((cx - r) / BUCKET);
+  const last = Math.floor((cx + r) / BUCKET);
+  for (let b = first; b <= last; b++) {
+    if (!terrain.buckets.has(b)) terrain.buckets.set(b, []);
+    terrain.buckets.get(b).push(crater);
+  }
+  if (terrain.layer) punchCrater(terrain.layer.getContext("2d"), crater);
+}
+
+function groundBelow(terrain, x, yStart) {
+  if (x < 0 || x > W) throw new Error(`groundBelow: x=${x} is outside the world`);
+  let y = yStart;
+  while (!isSolid(terrain, x, y)) y += 1;
+  return y;
+}
+
+// Escape direction for a point buried in the ground. Ground is "below the curve minus circles",
+// so the shortest way out is either up through the original surface or into the nearest crater.
+function terrainContact(terrain, x, y) {
+  if (!isSolid(terrain, x, y)) return null;
+  if (y >= H - BEDROCK) {
+    return { nx: 0, ny: -1, depth: Math.min(y - (H - BEDROCK), MAX_CONTACT_DEPTH) };
+  }
+  const slope = (surfaceY(terrain, x + 1) - surfaceY(terrain, x - 1)) / 2;
+  const len = Math.hypot(slope, 1);
+  let best = { nx: slope / len, ny: -1 / len, depth: (y - surfaceY(terrain, x)) / len };
+  const bucket = terrain.buckets.get(Math.floor(x / BUCKET)) || [];
+  for (const c of bucket) {
+    const dx = c.cx - x;
+    const dy = c.cy - y;
+    const d = Math.hypot(dx, dy);
+    if (d > 0 && d - c.r < best.depth) best = { nx: dx / d, ny: dy / d, depth: d - c.r };
+  }
+  best.depth = Math.min(best.depth, MAX_CONTACT_DEPTH);
+  return best;
+}
+
+function traceSurface(ctx, terrain) {
+  ctx.moveTo(0, terrain.surface[0]);
+  for (let x = 2; x <= W; x += 2) ctx.lineTo(x, terrain.surface[x]);
+}
+
+function renderTerrainLayer(terrain) {
+  const ctx = terrain.layer.getContext("2d");
+  ctx.setTransform(TERRAIN_RES, 0, 0, TERRAIN_RES, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.beginPath();
+  traceSurface(ctx, terrain);
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, GROUND_Y - 120, 0, H);
+  grad.addColorStop(0, COLORS.groundTop);
+  grad.addColorStop(1, COLORS.groundBottom);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  traceSurface(ctx, terrain);
+  ctx.strokeStyle = COLORS.groundEdge;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  drawBedrock(ctx);
+  for (const c of terrain.craters) punchCrater(ctx, c);
+}
+
+function drawBedrock(ctx) {
+  ctx.fillStyle = COLORS.bedrock;
+  ctx.fillRect(0, H - BEDROCK, W, BEDROCK);
+}
+
+// Incremental hole: erase the disc, then stroke a rim that only lands on ground still present.
+function punchCrater(ctx, c) {
+  ctx.beginPath();
+  ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2);
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fill();
+  ctx.globalCompositeOperation = "source-atop";
+  ctx.strokeStyle = COLORS.craterRim;
+  ctx.lineWidth = 8;
+  ctx.stroke();
+  ctx.globalCompositeOperation = "source-over";
+  drawBedrock(ctx);
+}
+
+// ===== BUILDING =====
+function domeRows(i) {
+  return Math.max(5, Math.round(14 * Math.sqrt(Math.max(0, 1 - ((i - 5.5) / 6.5) ** 2))));
+}
+
+function createWorld() {
+  return { bricks: [], arbiters: new Map(), nextId: 1 };
+}
+
+function addBrick(world, x, y, color) {
+  const hw = (BRICK_W - BRICK_GAP) / 2;
+  const hh = BRICK_H / 2;
+  const mass = 4 * hw * hh * BRICK_DENSITY;
+  const inertia = (mass * (4 * hw * hw + 4 * hh * hh)) / 12;
+  const brick = {
+    id: world.nextId++, x, y, a: 0, vx: 0, vy: 0, w: 0, hw, hh,
+    invMass: 1 / mass, invI: 1 / inertia, color, homeX: x, homeY: y,
+  };
+  world.bricks.push(brick);
+  return brick;
+}
+
+function createBuilding(world, rng) {
+  const left = BUILDING_X - (BUILDING_COLS * BRICK_W) / 2;
+  for (let i = 0; i < BUILDING_COLS; i++) {
+    for (let r = 0; r < domeRows(i); r++) {
+      const color = BRICK_COLORS[Math.floor(rng() * BRICK_COLORS.length)];
+      addBrick(world, left + (i + 0.5) * BRICK_W, GROUND_Y - (r + 0.5) * BRICK_H, color);
+    }
+  }
+}
+
+// "Standing" = still roughly where it was built and not tipped over.
+function isStanding(b) {
+  return Math.hypot(b.x - b.homeX, b.y - b.homeY) < BRICK_H && Math.abs(b.a) < STAND_ANGLE;
+}
+
+function countStanding(world) {
+  let n = 0;
+  for (const b of world.bricks) if (isStanding(b)) n++;
+  return n;
+}
+
+function removeLostBricks(world) {
+  world.bricks = world.bricks.filter((b) => b.x > -100 && b.x < W + 100 && b.y < H + 100);
+}
+
+// ===== BRICK PHYSICS =====
+// Sequential-impulse rigid bodies with warm starting (after Erin Catto's Box2D-Lite).
+// Bricks are oriented boxes; the terrain is an immovable body whose contacts come from
+// terrainContact(), so craters are felt immediately without rebuilding any collision shapes.
+
+const TERRAIN_BODY = { x: 0, y: 0, vx: 0, vy: 0, w: 0, invMass: 0, invI: 0 };
+// Corners and edge midpoints of a unit box, sampled against the terrain.
+const BOX_SAMPLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+
+function stepWorld(world, terrain, dt) {
+  updateArbiters(world, terrain);
+  for (const b of world.bricks) b.vy += GRAVITY * dt;
+  // Solve from the ground up so support reaches the top of tall stacks in fewer iterations.
+  const arbiters = [...world.arbiters.values()].sort((p, q) => arbiterDepth(q) - arbiterDepth(p));
+  for (const arb of arbiters) preStep(arb, 1 / dt);
+  for (let i = 0; i < SOLVER_ITERATIONS; i++) {
+    for (const arb of arbiters) applyImpulses(arb);
+  }
+  for (const b of world.bricks) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.a += b.w * dt;
+  }
+}
+
+function arbiterDepth(arb) {
+  return arb.b1 === TERRAIN_BODY ? Infinity : Math.max(arb.b1.y, arb.b2.y);
+}
+
+// Broadphase (sort and sweep on x) + narrowphase, keeping old impulses for warm starting.
+function updateArbiters(world, terrain) {
+  const seen = new Set();
+  const ext = Math.hypot((BRICK_W - BRICK_GAP) / 2, BRICK_H / 2) + CONTACT_MARGIN;
+  const sorted = [...world.bricks].sort((p, q) => p.x - q.x);
+  for (let i = 0; i < sorted.length; i++) {
+    const A = sorted[i];
+    for (let j = i + 1; j < sorted.length && sorted[j].x - A.x < 2 * ext; j++) {
+      const B = sorted[j];
+      if (Math.abs(B.y - A.y) >= 2 * ext) continue;
+      const [b1, b2] = A.id < B.id ? [A, B] : [B, A];
+      const contacts = collideBoxes(b1, b2);
+      if (contacts.length) mergeArbiter(world, seen, b1.id * 65536 + b2.id, b1, b2, contacts, BRICK_FRICTION);
+    }
+  }
+  for (const b of world.bricks) {
+    const contacts = terrainContacts(terrain, b);
+    if (contacts.length) mergeArbiter(world, seen, -b.id, TERRAIN_BODY, b, contacts, TERRAIN_FRICTION);
+  }
+  for (const key of world.arbiters.keys()) if (!seen.has(key)) world.arbiters.delete(key);
+}
+
+// Last step's impulses are matched by contact position, not by clip-feature ids: for
+// perfectly aligned equal bricks the features flicker every step and warm starting is lost.
+function mergeArbiter(world, seen, key, b1, b2, contacts, friction) {
+  seen.add(key);
+  const old = world.arbiters.get(key);
+  if (old) {
+    for (const c of contacts) {
+      const prev = old.contacts.find((o) => Math.abs(o.px - c.px) + Math.abs(o.py - c.py) < WARM_MATCH_DIST);
+      if (prev) {
+        c.Pn = prev.Pn;
+        c.Pt = prev.Pt;
+      }
+    }
+  }
+  world.arbiters.set(key, { b1, b2, contacts, friction });
+}
+
+// Samples are probed CONTACT_MARGIN lower so a corner hovering just above the ground keeps
+// its (speculative) contact instead of flickering in and out.
+function terrainContacts(terrain, b) {
+  const c = Math.cos(b.a);
+  const s = Math.sin(b.a);
+  const out = [];
+  for (const [ux, uy] of BOX_SAMPLES) {
+    const lx = ux * b.hw;
+    const ly = uy * b.hh;
+    const px = b.x + lx * c - ly * s;
+    const py = b.y + lx * s + ly * c;
+    const hit = terrainContact(terrain, px, py + CONTACT_MARGIN);
+    if (hit) out.push(makeContact(px, py, hit.nx, hit.ny, -CONTACT_MARGIN * hit.ny - hit.depth));
+  }
+  return out;
+}
+
+function makeContact(px, py, nx, ny, separation) {
+  return { px, py, nx, ny, separation, Pn: 0, Pt: 0 };
+}
+
+// Box vs. box: find the axis of least penetration, then clip the other box's most
+// anti-parallel edge against the reference face. Normal always points from A to B.
+function collideBoxes(A, B) {
+  const cA = Math.cos(A.a), sA = Math.sin(A.a);
+  const cB = Math.cos(B.a), sB = Math.sin(B.a);
+  const dpx = B.x - A.x, dpy = B.y - A.y;
+  const dAx = cA * dpx + sA * dpy, dAy = -sA * dpx + cA * dpy;
+  const dBx = cB * dpx + sB * dpy, dBy = -sB * dpx + cB * dpy;
+  const a11 = Math.abs(cA * cB + sA * sB), a12 = Math.abs(-cA * sB + sA * cB);
+  const a21 = Math.abs(-sA * cB + cA * sB), a22 = Math.abs(sA * sB + cA * cB);
+
+  const faceAx = Math.abs(dAx) - A.hw - (a11 * B.hw + a12 * B.hh);
+  const faceAy = Math.abs(dAy) - A.hh - (a21 * B.hw + a22 * B.hh);
+  if (faceAx > CONTACT_MARGIN || faceAy > CONTACT_MARGIN) return [];
+  const faceBx = Math.abs(dBx) - (a11 * A.hw + a21 * A.hh) - B.hw;
+  const faceBy = Math.abs(dBy) - (a12 * A.hw + a22 * A.hh) - B.hh;
+  if (faceBx > CONTACT_MARGIN || faceBy > CONTACT_MARGIN) return [];
+
+  // Prefer A's faces slightly so the chosen axis doesn't flicker between frames.
+  let axis = "AX", sep = faceAx;
+  let nx = dAx > 0 ? cA : -cA, ny = dAx > 0 ? sA : -sA;
+  if (faceAy > 0.95 * sep + 0.01 * A.hh) {
+    axis = "AY"; sep = faceAy;
+    nx = dAy > 0 ? -sA : sA; ny = dAy > 0 ? cA : -cA;
+  }
+  if (faceBx > 0.95 * sep + 0.01 * B.hw) {
+    axis = "BX"; sep = faceBx;
+    nx = dBx > 0 ? cB : -cB; ny = dBx > 0 ? sB : -sB;
+  }
+  if (faceBy > 0.95 * sep + 0.01 * B.hh) {
+    axis = "BY"; sep = faceBy;
+    nx = dBy > 0 ? -sB : sB; ny = dBy > 0 ? cB : -cB;
+  }
+  return clipContacts(A, B, axis, nx, ny);
+}
+
+function clipContacts(A, B, axis, nx, ny) {
+  const onA = axis[0] === "A";
+  const ref = onA ? A : B;
+  const inc = onA ? B : A;
+  const fnx = onA ? nx : -nx, fny = onA ? ny : -ny;
+  const c = Math.cos(ref.a), s = Math.sin(ref.a);
+  const alongX = axis[1] === "X";
+  const sideNx = alongX ? -s : c, sideNy = alongX ? c : s;
+  const front = ref.x * fnx + ref.y * fny + (alongX ? ref.hw : ref.hh);
+  const side = ref.x * sideNx + ref.y * sideNy;
+  const sideExtent = alongX ? ref.hh : ref.hw;
+
+  const edge = incidentEdge(inc, fnx, fny);
+  const clip1 = clipSegment(edge, -sideNx, -sideNy, -side + sideExtent);
+  if (clip1.length < 2) return [];
+  const clip2 = clipSegment(clip1, sideNx, sideNy, side + sideExtent);
+  if (clip2.length < 2) return [];
+
+  const contacts = [];
+  for (const v of clip2) {
+    const separation = fnx * v.x + fny * v.y - front;
+    if (separation <= CONTACT_MARGIN) {
+      contacts.push(makeContact(v.x - separation * fnx, v.y - separation * fny, nx, ny, separation));
+    }
+  }
+  return contacts;
+}
+
+// The edge of `box` whose outward normal is most opposed to the reference face normal.
+function incidentEdge(box, fnx, fny) {
+  const c = Math.cos(box.a), s = Math.sin(box.a);
+  const nx = -(c * fnx + s * fny);
+  const ny = -(-s * fnx + c * fny);
+  const hw = box.hw, hh = box.hh;
+  let corners;
+  if (Math.abs(nx) > Math.abs(ny)) {
+    corners = nx > 0 ? [[hw, -hh], [hw, hh]] : [[-hw, hh], [-hw, -hh]];
+  } else {
+    corners = ny > 0 ? [[hw, hh], [-hw, hh]] : [[-hw, -hh], [hw, -hh]];
+  }
+  return corners.map(([lx, ly]) => ({ x: box.x + c * lx - s * ly, y: box.y + s * lx + c * ly }));
+}
+
+// Keep the part of segment vIn on the negative side of the line n·p = offset.
+function clipSegment(vIn, nx, ny, offset) {
+  const out = [];
+  const d0 = nx * vIn[0].x + ny * vIn[0].y - offset;
+  const d1 = nx * vIn[1].x + ny * vIn[1].y - offset;
+  if (d0 <= 0) out.push(vIn[0]);
+  if (d1 <= 0) out.push(vIn[1]);
+  if (d0 * d1 < 0) {
+    const t = d0 / (d0 - d1);
+    out.push({ x: lerp(vIn[0].x, vIn[1].x, t), y: lerp(vIn[0].y, vIn[1].y, t) });
+  }
+  return out;
+}
+
+function applyPairImpulse(arb, c, px, py) {
+  const { b1, b2 } = arb;
+  b1.vx -= b1.invMass * px;
+  b1.vy -= b1.invMass * py;
+  b1.w -= b1.invI * (c.r1x * py - c.r1y * px);
+  b2.vx += b2.invMass * px;
+  b2.vy += b2.invMass * py;
+  b2.w += b2.invI * (c.r2x * py - c.r2y * px);
+}
+
+function preStep(arb, invDt) {
+  const { b1, b2 } = arb;
+  for (const c of arb.contacts) {
+    c.r1x = c.px - b1.x; c.r1y = c.py - b1.y;
+    c.r2x = c.px - b2.x; c.r2y = c.py - b2.y;
+    const tx = c.ny, ty = -c.nx;
+    const rn1 = c.r1x * c.nx + c.r1y * c.ny, rn2 = c.r2x * c.nx + c.r2y * c.ny;
+    const rt1 = c.r1x * tx + c.r1y * ty, rt2 = c.r2x * tx + c.r2y * ty;
+    const r1sq = c.r1x * c.r1x + c.r1y * c.r1y, r2sq = c.r2x * c.r2x + c.r2y * c.r2y;
+    const invM = b1.invMass + b2.invMass;
+    c.massNormal = 1 / (invM + b1.invI * (r1sq - rn1 * rn1) + b2.invI * (r2sq - rn2 * rn2));
+    c.massTangent = 1 / (invM + b1.invI * (r1sq - rt1 * rt1) + b2.invI * (r2sq - rt2 * rt2));
+    // Overlap beyond the slop is pushed out (Baumgarte). A positive gap is a speculative
+    // contact: it only stops the pair from closing by more than the gap this step.
+    c.bias = c.separation > 0
+      ? -c.separation * invDt
+      : -BIAS_FACTOR * invDt * Math.min(0, c.separation + ALLOWED_PENETRATION);
+    applyPairImpulse(arb, c, c.Pn * c.nx + c.Pt * tx, c.Pn * c.ny + c.Pt * ty);
+  }
+}
+
+function relativeVelocity(arb, c) {
+  const { b1, b2 } = arb;
+  return [
+    b2.vx - b2.w * c.r2y - b1.vx + b1.w * c.r1y,
+    b2.vy + b2.w * c.r2x - b1.vy - b1.w * c.r1x,
+  ];
+}
+
+// Accumulated impulses are clamped (not each delta) so warm starting stays valid.
+function applyImpulses(arb) {
+  for (const c of arb.contacts) {
+    let [dvx, dvy] = relativeVelocity(arb, c);
+    const vn = dvx * c.nx + dvy * c.ny;
+    const pn0 = c.Pn;
+    c.Pn = Math.max(pn0 + c.massNormal * (-vn + c.bias), 0);
+    const dPn = c.Pn - pn0;
+    applyPairImpulse(arb, c, dPn * c.nx, dPn * c.ny);
+
+    [dvx, dvy] = relativeVelocity(arb, c);
+    const tx = c.ny, ty = -c.nx;
+    const vt = dvx * tx + dvy * ty;
+    const maxPt = arb.friction * c.Pn;
+    const pt0 = c.Pt;
+    c.Pt = clamp(pt0 - c.massTangent * vt, -maxPt, maxPt);
+    const dPt = c.Pt - pt0;
+    applyPairImpulse(arb, c, dPt * tx, dPt * ty);
+  }
+}
+
+// Fling nearby bricks away from an explosion, with a lift and a random spin.
+function blastBricks(world, x, y, rng) {
+  for (const b of world.bricks) {
+    const dx = b.x - x;
+    const dy = b.y - y;
+    const d = Math.hypot(dx, dy);
+    if (d >= BLAST_PUSH_R) continue;
+    const f = 1 - d / BLAST_PUSH_R;
+    const inv = d > 0.001 ? 1 / d : 0;
+    b.vx += dx * inv * BLAST_PUSH_SPEED * f;
+    b.vy += dy * inv * BLAST_PUSH_SPEED * f - BLAST_LIFT * f;
+    b.w += (rng() - 0.5) * 2 * BLAST_SPIN * f;
+  }
+}
+
+// ===== CANNON & AIM =====
+function createCannon(terrain) {
+  return {
+    x: CANNON_X,
+    y: groundBelow(terrain, CANNON_X, 0),
+    vy: 0,
+    angle: DEFAULT_ANGLE,
+    power: DEFAULT_POWER,
+  };
+}
+
+function cannonPivot(cannon) {
+  return { x: cannon.x, y: cannon.y - CANNON_PIVOT_H };
+}
+
+function muzzle(cannon) {
+  const p = cannonPivot(cannon);
+  const a = degToRad(cannon.angle);
+  return { x: p.x + Math.cos(a) * BARREL_LEN, y: p.y - Math.sin(a) * BARREL_LEN };
+}
+
+function setAim(cannon, angle, power) {
+  cannon.angle = clamp(angle, ANGLE_MIN, ANGLE_MAX);
+  cannon.power = clamp(power, POWER_MIN, POWER_MAX);
+}
+
+function aimAtPoint(cannon, wx, wy) {
+  const p = cannonPivot(cannon);
+  const angle = radToDeg(Math.atan2(p.y - wy, wx - p.x));
+  setAim(cannon, angle, Math.hypot(wx - p.x, wy - p.y) / AIM_RANGE);
+}
+
+function applyKeyAim(game, dt) {
+  const keys = game.input.keys;
+  const c = game.cannon;
+  let da = 0;
+  let dp = 0;
+  if (keys.has("angleUp")) da += ANGLE_RATE * dt;
+  if (keys.has("angleDown")) da -= ANGLE_RATE * dt;
+  if (keys.has("powerUp")) dp += POWER_RATE * dt;
+  if (keys.has("powerDown")) dp -= POWER_RATE * dt;
+  if (da || dp) setAim(c, c.angle + da, c.power + dp);
+}
+
+// The cannon drops when a crater opens under it, until the point just below it is solid again.
+function updateCannonFall(cannon, terrain, dt) {
+  if (isSolid(terrain, cannon.x, cannon.y + 1)) {
+    cannon.vy = 0;
+    return;
+  }
+  cannon.vy += GRAVITY * dt;
+  const next = cannon.y + cannon.vy * dt;
+  const ground = groundBelow(terrain, cannon.x, cannon.y + 1);
+  if (next + 1 >= ground) {
+    cannon.y = ground - 1;
+    cannon.vy = 0;
+  } else {
+    cannon.y = next;
+  }
+}
+
+// ===== PROJECTILE =====
+function launchBody(cannon) {
+  const m = muzzle(cannon);
+  const a = degToRad(cannon.angle);
+  const speed = cannon.power * MAX_SPEED;
+  return { x: m.x, y: m.y, vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed, r: BALL_R };
+}
+
+// Semi-implicit Euler: velocity first, then position.
+function stepBody(body, dt) {
+  body.vy += GRAVITY * dt;
+  body.x += body.vx * dt;
+  body.y += body.vy * dt;
+}
+
+function ballHitsBrick(bricks, body) {
+  return bricks.some((b) => circleRectOverlap(body.x, body.y, body.r, b));
+}
+
+function ballHitsTerrain(terrain, body) {
+  const { x, y, r } = body;
+  return (
+    isSolid(terrain, x, y) ||
+    isSolid(terrain, x + r, y) ||
+    isSolid(terrain, x - r, y) ||
+    isSolid(terrain, x, y + r) ||
+    isSolid(terrain, x, y - r)
+  );
+}
+
+function isOutOfWorld(body) {
+  return body.x < -50 || body.x > W + 50 || body.y > H + 50;
+}
+
+// One DT of flight, split so no sub-step moves more than MAX_STEP (no tunnelling).
+// Shared by the real projectile and the aim preview. Returns "hit", "out" or null.
+function advanceBody(game, body, dt) {
+  const n = Math.max(1, Math.ceil((Math.hypot(body.vx, body.vy) * dt) / MAX_STEP));
+  for (let i = 0; i < n; i++) {
+    stepBody(body, dt / n);
+    if (ballHitsBrick(game.world.bricks, body)) return "hit";
+    if (ballHitsTerrain(game.terrain, body)) return "hit";
+    if (isOutOfWorld(body)) return "out";
+  }
+  return null;
+}
+
+function computePreview(game) {
+  const body = launchBody(game.cannon);
+  const points = [];
+  const steps = Math.round(PREVIEW_TIME / DT);
+  for (let i = 0; i < steps; i++) {
+    const result = advanceBody(game, body, DT);
+    points.push({ x: body.x, y: body.y });
+    if (result === "hit") return { points, steps, hit: { x: body.x, y: body.y } };
+    if (result === "out") break;
+  }
+  return { points, steps, hit: null };
+}
+
+function updateProjectile(game, dt) {
+  const body = game.projectile;
+  if (!body) return;
+  const result = advanceBody(game, body, dt);
+  if (!result) return;
+  game.projectile = null;
+  if (result === "hit") explode(game, body.x, body.y);
+  else setState(game, "RELOADING");
+}
+
+function explode(game, x, y) {
+  addCrater(game.terrain, x, y, CRATER_R);
+  destroyBricksNear(game, x, y);
+  blastBricks(game.world, x, y, game.rng);
+  // Cannon footing and brick support need no pass here: updateCannonFall and the rigid-body
+  // solver both read the terrain every step, so the new crater takes effect on the next update.
+  game.preview = null;
+  setState(game, "RELOADING");
+}
+
+function destroyBricksNear(game, x, y) {
+  const survivors = [];
+  for (const b of game.world.bricks) {
+    if (Math.hypot(b.x - x, b.y - y) < BLAST_R) {
+      for (let i = 0; i < 3; i++) game.debris.push(createDebris(b, x, y, game.rng));
+    } else {
+      survivors.push(b);
+    }
+  }
+  game.world.bricks = survivors;
+}
+
+// ===== PARTICLES =====
+function createDebris(brick, bx, by, rng) {
+  const d = Math.hypot(brick.x - bx, brick.y - by);
+  const angle = d > 0.001 ? Math.atan2(brick.y - by, brick.x - bx) : rng() * Math.PI * 2;
+  const speed = 80 + rng() * 180;
+  return {
+    x: brick.x,
+    y: brick.y,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed - (60 + rng() * 120),
+    size: 4 + rng() * 2,
+    spin: (rng() - 0.5) * 12,
+    a: rng() * Math.PI,
+    color: brick.color,
+    age: 0,
+  };
+}
+
+function updateDebris(game, dt) {
+  for (const p of game.debris) {
+    p.vy += GRAVITY * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.a += p.spin * dt;
+    p.age += dt;
+    if (isSolid(game.terrain, p.x, p.y)) {
+      p.y -= p.vy * dt;
+      p.vy *= -0.3;
+      p.vx *= 0.6;
+    }
+  }
+  game.debris = game.debris.filter((p) => p.age < DEBRIS_LIFE);
+}
+
+// ===== GAME STATE =====
+let game = null;
+
+function newSeed() {
+  return Math.floor(Math.random() * 2 ** 31);
+}
+
+function createClouds() {
+  return [
+    { x: 190, y: 150, s: 1 },
+    { x: 470, y: 92, s: 0.72 },
+  ];
+}
+
+// withLayer / withBuilding = false build small headless worlds for the self-tests.
+function createGame({ seed, withLayer = true, withBuilding = true }) {
+  const terrain = createTerrain(withLayer);
+  const rng = makeRng(seed);
+  const world = createWorld();
+  if (withBuilding) createBuilding(world, rng);
+  return {
+    seed, rng, terrain, world,
+    cannon: createCannon(terrain),
+    projectile: null,
+    debris: [],
+    clouds: createClouds(),
+    state: "READY",
+    stateTime: 0,
+    shots: 0,
+    startBricks: world.bricks.length,
+    preview: null,
+    showPreview: true,
+    input: { keys: new Set(), hoverReset: false },
+    view: null,
+    loop: { last: 0, acc: 0 },
+  };
+}
+
+// New terrain and building; the canvas, input and loop carry over.
+function resetGame(old) {
+  const fresh = createGame({ seed: newSeed() });
+  fresh.view = old.view;
+  fresh.input = old.input;
+  fresh.loop = old.loop;
+  fresh.showPreview = old.showPreview;
+  return fresh;
+}
+
+function setState(game, state) {
+  game.state = state;
+  game.stateTime = 0;
+}
+
+function isBuildingDown(game) {
+  return game.startBricks > 0 && countStanding(game.world) <= WIN_FRACTION * game.startBricks;
+}
+
+function fire(game) {
+  if (game.state !== "READY") return;
+  game.projectile = launchBody(game.cannon);
+  game.shots += 1;
+  setState(game, "IN_FLIGHT");
+}
+
+function updateState(game, dt) {
+  game.stateTime += dt;
+  if (game.state === "RELOADING" && game.stateTime >= RELOAD_TIME) {
+    setState(game, isBuildingDown(game) ? "WON" : "READY");
+  } else if (game.state === "READY" && isBuildingDown(game)) {
+    setState(game, "WON"); // a late collapse after the reload still counts
+  }
+}
+
+function updateClouds(clouds, dt) {
+  for (const c of clouds) {
+    c.x += CLOUD_SPEED * dt;
+    if (c.x > W + 120) c.x = -160;
+  }
+}
+
+function update(game, dt) {
+  updateClouds(game.clouds, dt);
+  applyKeyAim(game, dt);
+  updateCannonFall(game.cannon, game.terrain, dt);
+  stepWorld(game.world, game.terrain, dt);
+  removeLostBricks(game.world);
+  updateProjectile(game, dt);
+  updateDebris(game, dt);
+  updateState(game, dt);
+}
+
+// ===== RENDER =====
+const BRICK_SHADES = new Map(
+  BRICK_COLORS.map((c) => [c, { light: shadeColor(c, 0.38), dark: shadeColor(c, -0.16) }])
+);
+const CLOUD_PUFFS = [[0, 0, 24], [26, -12, 30], [56, 0, 22], [28, 8, 22]];
+
+function resizeCanvas(view) {
+  const availW = Math.max(160, window.innerWidth - 32);
+  const availH = Math.max(90, window.innerHeight - 32);
+  const cssW = Math.min(availW, (availH * 16) / 9);
+  const cssH = (cssW * 9) / 16;
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  view.canvas.style.width = `${cssW}px`;
+  view.canvas.style.height = `${cssH}px`;
+  view.canvas.width = Math.round(cssW * dpr);
+  view.canvas.height = Math.round(cssH * dpr);
+  view.scale = view.canvas.width / W;
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function circlePath(ctx, x, y, r) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+}
+
+function drawSky(ctx) {
+  const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  grad.addColorStop(0, COLORS.skyTop);
+  grad.addColorStop(1, COLORS.skyHorizon);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawSun(ctx) {
+  const x = W * 0.43;
+  const y = H * 0.18;
+  ctx.fillStyle = "rgba(244, 250, 247, 0.45)";
+  circlePath(ctx, x, y, 54);
+  ctx.fill();
+  ctx.fillStyle = COLORS.sun;
+  circlePath(ctx, x, y, 38);
+  ctx.fill();
+}
+
+function drawClouds(ctx, clouds) {
+  ctx.fillStyle = COLORS.cloud;
+  for (const c of clouds) {
+    ctx.beginPath();
+    for (const [dx, dy, r] of CLOUD_PUFFS) {
+      ctx.moveTo(c.x + dx * c.s + r * c.s, c.y + dy * c.s);
+      ctx.arc(c.x + dx * c.s, c.y + dy * c.s, r * c.s, 0, Math.PI * 2);
+    }
+    ctx.fill(); // one path so overlapping puffs don't stack their opacity
+  }
+}
+
+function drawFarHills(ctx) {
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 10) {
+    ctx.lineTo(x, 562 + 12 * Math.sin(x / 230 + 0.8) + 6 * Math.sin(x / 90));
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fillStyle = COLORS.farHills;
+  ctx.fill();
+}
+
+// Cartoon brick: warm fill, light top bevel, darker lip, thick ink outline.
+function drawBrick(ctx, b) {
+  const w = BRICK_W - 1;
+  const h = BRICK_H - 1;
+  const shade = BRICK_SHADES.get(b.color);
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.a);
+  roundRectPath(ctx, -w / 2, -h / 2, w, h, 3);
+  ctx.fillStyle = b.color;
+  ctx.fill();
+  ctx.fillStyle = shade.dark;
+  ctx.fillRect(-w / 2 + 1.5, h / 2 - 3.4, w - 3, 2.2);
+  ctx.fillStyle = shade.light;
+  roundRectPath(ctx, -w / 2 + 2.5, -h / 2 + 1.8, w - 9, 2.4, 1.2);
+  ctx.fill();
+  ctx.fillRect(w / 2 - 5, -h / 2 + 1.8, 2.2, 2.4);
+  roundRectPath(ctx, -w / 2, -h / 2, w, h, 3);
+  ctx.strokeStyle = COLORS.brickInk;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBricks(ctx, bricks) {
+  ctx.lineJoin = "round";
+  for (const b of bricks) drawBrick(ctx, b);
+}
+
+function barrelHalfHeight(x) {
+  return 9.5 - (2.5 * (x + 12)) / 50;
+}
+
+function drawBarrelBody(ctx) {
+  ctx.fillStyle = COLORS.navy;
+  circlePath(ctx, -21, 0, 4.5); // cascabel knob
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-12, -9.5);
+  ctx.lineTo(38, -barrelHalfHeight(38));
+  ctx.lineTo(38, barrelHalfHeight(38));
+  ctx.lineTo(-12, 9.5);
+  ctx.arc(-12, 0, 9.5, Math.PI / 2, Math.PI * 1.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-10, -5);
+  ctx.lineTo(34, -3.6);
+  ctx.strokeStyle = COLORS.barrelLight;
+  ctx.lineWidth = 2.6;
+  ctx.stroke();
+}
+
+function drawBarrelTrim(ctx) {
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = 1.6;
+  for (const bx of [4, 22]) {
+    const hh = barrelHalfHeight(bx) + 1;
+    roundRectPath(ctx, bx - 2.2, -hh, 4.4, hh * 2, 1.5);
+    ctx.fillStyle = COLORS.barrelBand;
+    ctx.fill();
+    ctx.stroke();
+  }
+  roundRectPath(ctx, 37, -9, BARREL_LEN - 37, 18, 3.5); // muzzle ring
+  ctx.fillStyle = COLORS.navy;
+  ctx.fill();
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(39.5, -6);
+  ctx.lineTo(45.5, -6);
+  ctx.strokeStyle = COLORS.barrelLight;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(BARREL_LEN, 0, 2.2, 5.6, 0, 0, Math.PI * 2);
+  ctx.fillStyle = COLORS.ink;
+  ctx.fill();
+}
+
+function drawBarrel(ctx, cannon) {
+  const p = cannonPivot(cannon);
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(-degToRad(cannon.angle));
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath(); // fuse
+  ctx.moveTo(-8, -8.5);
+  ctx.quadraticCurveTo(-11, -16, -5, -19);
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = 2.4;
+  drawBarrelBody(ctx);
+  drawBarrelTrim(ctx);
+  ctx.restore();
+}
+
+function drawCarriage(ctx, cannon) {
+  const cy = cannon.y - 8;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.arc(cannon.x, cy, 18, Math.PI, 0);
+  ctx.closePath();
+  ctx.fillStyle = COLORS.wood;
+  ctx.fill();
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cannon.x, cy, 11, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.strokeStyle = COLORS.woodLight;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+  const p = cannonPivot(cannon);
+  circlePath(ctx, p.x, p.y, 3.6);
+  ctx.fillStyle = COLORS.brass;
+  ctx.fill();
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+}
+
+function drawWheel(ctx, x, y, r) {
+  circlePath(ctx, x, y, r);
+  ctx.fillStyle = COLORS.woodDark;
+  ctx.fill();
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i * Math.PI) / 3 + 0.3;
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(a) * r * 0.82, y + Math.sin(a) * r * 0.82);
+  }
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  circlePath(ctx, x, y, r * 0.62);
+  ctx.strokeStyle = COLORS.woodLight;
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  circlePath(ctx, x, y, 2.6);
+  ctx.fillStyle = COLORS.brass;
+  ctx.fill();
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+}
+
+function drawCannon(ctx, cannon) {
+  drawBarrel(ctx, cannon);
+  drawCarriage(ctx, cannon);
+  drawWheel(ctx, cannon.x - 11, cannon.y - 9, 9);
+  drawWheel(ctx, cannon.x + 11, cannon.y - 9, 9);
+}
+
+function drawBall(ctx, body) {
+  circlePath(ctx, body.x, body.y, body.r);
+  ctx.fillStyle = COLORS.navy;
+  ctx.fill();
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  circlePath(ctx, body.x - 2.4, body.y - 2.4, 2.2);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+  ctx.fill();
+}
+
+function drawDebris(ctx, debris) {
+  for (const p of debris) {
+    ctx.save();
+    ctx.globalAlpha = 1 - p.age / DEBRIS_LIFE;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.a);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+    ctx.strokeStyle = COLORS.brickInk;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-p.size / 2, -p.size / 2, p.size, p.size);
+    ctx.restore();
+  }
+}
+
+function drawPreview(ctx, preview) {
+  for (let i = 5; i < preview.points.length; i += 6) {
+    const p = preview.points[i];
+    ctx.fillStyle = `rgba(${COLORS.preview}, ${0.45 * (1 - i / preview.steps)})`;
+    circlePath(ctx, p.x, p.y, 2.2);
+    ctx.fill();
+  }
+}
+
+function drawStatusPill(ctx, state) {
+  const { text, dot } = STATUS[state];
+  ctx.font = `700 14px ${FONT}`;
+  ctx.letterSpacing = "1.6px";
+  const h = 36;
+  const w = ctx.measureText(text).width + 58;
+  const x = W - 28 - w;
+  const y = 26;
+  ctx.fillStyle = "rgba(15, 27, 45, 0.08)";
+  roundRectPath(ctx, x, y + 3, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  roundRectPath(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = dot;
+  circlePath(ctx, x + 21, y + h / 2, 5.5);
+  ctx.fill();
+  ctx.fillStyle = COLORS.navy;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText(text, x + 35, y + h / 2 + 1);
+  ctx.letterSpacing = "0px";
+}
+
+function drawResetButton(ctx, hover) {
+  const { x, y, w, h } = RESET_BUTTON;
+  ctx.fillStyle = "rgba(15, 27, 45, 0.08)";
+  roundRectPath(ctx, x, y + 3, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = hover ? "#fdf1e7" : "#ffffff";
+  roundRectPath(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.strokeStyle = hover ? "#e76f51" : "rgba(31, 45, 74, 0.18)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.font = `700 14px ${FONT}`;
+  ctx.letterSpacing = "1.6px";
+  ctx.fillStyle = COLORS.navy;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("↻ RESET", x + w / 2, y + h / 2 + 1);
+  ctx.letterSpacing = "0px";
+}
+
+function drawHud(ctx, game) {
+  const c = game.cannon;
+  const parts = [
+    `Angle ${Math.round(c.angle)}°`,
+    `Power ${Math.round(c.power * 100)}%`,
+    `Shots ${game.shots}`,
+    `Bricks ${countStanding(game.world)}/${game.startBricks}`,
+    `v${VERSION}`,
+  ];
+  ctx.font = `600 16px ${FONT}`;
+  ctx.fillStyle = COLORS.hud;
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+  ctx.fillText(parts.join("  ·  "), 28, H - 30);
+}
+
+function drawWinCard(ctx, shots) {
+  const w = 440;
+  const h = 132;
+  const x = (W - w) / 2;
+  const y = (H - h) / 2 - 60;
+  ctx.fillStyle = "rgba(15, 27, 45, 0.12)";
+  roundRectPath(ctx, x, y + 6, w, h, 22);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  roundRectPath(ctx, x, y, w, h, 22);
+  ctx.fill();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = COLORS.navy;
+  ctx.font = `800 30px ${FONT}`;
+  ctx.fillText(`Building down in ${shots} shot${shots === 1 ? "" : "s"}`, W / 2, y + 54);
+  ctx.fillStyle = COLORS.hud;
+  ctx.font = `500 17px ${FONT}`;
+  ctx.fillText("Press R to play again", W / 2, y + 94);
+}
+
+function render(game) {
+  const { ctx, scale } = game.view;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  drawSky(ctx);
+  drawSun(ctx);
+  drawClouds(ctx, game.clouds);
+  drawFarHills(ctx);
+  ctx.drawImage(game.terrain.layer, 0, 0, W, H);
+  drawBricks(ctx, game.world.bricks);
+  drawCannon(ctx, game.cannon);
+  if (game.projectile) drawBall(ctx, game.projectile);
+  drawDebris(ctx, game.debris);
+  if (game.state === "READY" && game.showPreview && game.preview) drawPreview(ctx, game.preview);
+  drawStatusPill(ctx, game.state);
+  drawResetButton(ctx, game.input.hoverReset);
+  drawHud(ctx, game);
+  if (game.state === "WON") drawWinCard(ctx, game.shots);
+}
+
+// ===== INPUT =====
+const KEY_ACTIONS = {
+  ArrowLeft: "angleDown", KeyA: "angleDown",
+  ArrowRight: "angleUp", KeyD: "angleUp",
+  ArrowUp: "powerUp", KeyW: "powerUp",
+  ArrowDown: "powerDown", KeyS: "powerDown",
+};
+
+function toWorld(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (W / rect.width),
+    y: (e.clientY - rect.top) * (H / rect.height),
+  };
+}
+
+function onKeyDown(e) {
+  if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
+  if (KEY_ACTIONS[e.code]) game.input.keys.add(KEY_ACTIONS[e.code]);
+  if (e.repeat) return;
+  if (e.code === "Space") fire(game);
+  else if (e.code === "KeyR") game = resetGame(game);
+  else if (e.code === "KeyT") game.showPreview = !game.showPreview;
+}
+
+function onKeyUp(e) {
+  if (KEY_ACTIONS[e.code]) game.input.keys.delete(KEY_ACTIONS[e.code]);
+}
+
+function isOnResetButton(p) {
+  const b = RESET_BUTTON;
+  return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+}
+
+function installInput(canvas) {
+  canvas.addEventListener("pointermove", (e) => {
+    const p = toWorld(canvas, e);
+    game.input.hoverReset = isOnResetButton(p);
+    canvas.style.cursor = game.input.hoverReset ? "pointer" : "crosshair";
+    if (!game.input.hoverReset) aimAtPoint(game.cannon, p.x, p.y);
+  });
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const p = toWorld(canvas, e);
+    if (isOnResetButton(p)) {
+      game = resetGame(game);
+      return;
+    }
+    aimAtPoint(game.cannon, p.x, p.y);
+    fire(game);
+  });
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", () => game.input.keys.clear());
+}
+
+// ===== LOOP =====
+function frame(now) {
+  const loop = game.loop;
+  loop.acc += Math.min(0.1, (now - loop.last) / 1000);
+  loop.last = now;
+  while (loop.acc >= DT) {
+    update(game, DT);
+    loop.acc -= DT;
+  }
+  // Bricks can move every step, so the arc is simply recomputed each frame while aiming.
+  if (game.state === "READY" && game.showPreview) game.preview = computePreview(game);
+  render(game);
+  requestAnimationFrame(frame);
+}
+
+// ===== SELF-TESTS =====
+function testGame(withBuilding = false) {
+  return createGame({ seed: 7, withLayer: false, withBuilding });
+}
+
+function runWorld(world, terrain, seconds) {
+  for (let t = 0; t < seconds; t += DT) stepWorld(world, terrain, DT);
+}
+
+function check(pass, expected, actual) {
+  return { pass: Boolean(pass), expected, actual };
+}
+
+const TERRAIN_TESTS = [
+  ["T1", "30 below surface, no craters → solid", () => {
+    const t = createTerrain(false);
+    return check(isSolid(t, 800, surfaceY(t, 800) + 30), true, isSolid(t, 800, surfaceY(t, 800) + 30));
+  }],
+  ["T2", "30 above surface → not solid", () => {
+    const t = createTerrain(false);
+    const v = isSolid(t, 800, surfaceY(t, 800) - 30);
+    return check(v === false, false, v);
+  }],
+  ["T3", "Crater r=40 on surface; 20 below at centre → not solid", () => {
+    const t = createTerrain(false);
+    const s = surfaceY(t, 800);
+    addCrater(t, 800, s, 40);
+    const v = isSolid(t, 800, s + 20);
+    return check(v === false, false, v);
+  }],
+  ["T4", "Same crater; 45 from centre, below surface → solid", () => {
+    const t = createTerrain(false);
+    const s = surfaceY(t, 800);
+    addCrater(t, 800, s, 40);
+    return check(isSolid(t, 800, s + 45), true, isSolid(t, 800, s + 45));
+  }],
+  ["T5", "Overlapping craters: inside 2nd only → air; inside neither → solid", () => {
+    const t = createTerrain(false);
+    const s = surfaceY(t, 730);
+    addCrater(t, 700, s, 40);
+    addCrater(t, 760, s, 40);
+    const a = isSolid(t, 790, s + 10);
+    const b = isSolid(t, 700, s + 60);
+    return check(a === false && b === true, "false, true", `${a}, ${b}`);
+  }],
+  ["T6", "Crater at x=100; point at x=1500 below surface → solid", () => {
+    const t = createTerrain(false);
+    addCrater(t, 100, surfaceY(t, 100), 45);
+    const v = isSolid(t, 1500, surfaceY(t, 1500) + 10);
+    return check(v, true, v);
+  }],
+  ["T7", "Crater on bucket boundary (x=640): both sides → not solid", () => {
+    const t = createTerrain(false);
+    const cy = surfaceY(t, 640) + 20;
+    addCrater(t, 640, cy, 50);
+    const a = isSolid(t, 620, cy + 10);
+    const b = isSolid(t, 660, cy + 10);
+    return check(!a && !b, "false, false", `${a}, ${b}`);
+  }],
+  ["T8", "Crater reaching the bottom; bedrock inside it → solid", () => {
+    const t = createTerrain(false);
+    addCrater(t, 1000, H - 30, 60);
+    const v = isSolid(t, 1000, H - 10);
+    return check(v, true, v);
+  }],
+  ["T13", "isSolid with x < 0 or x > W → false", () => {
+    const t = createTerrain(false);
+    const a = isSolid(t, -1, 800);
+    const b = isSolid(t, W + 1, 800);
+    return check(!a && !b, "false, false", `${a}, ${b}`);
+  }],
+];
+
+const FLIGHT_TESTS = [
+  ["T9", "Ball at 3000 u/s straight down → impact within 3 of surface", () => {
+    const g = testGame();
+    const body = { x: 1400, y: 300, vx: 0, vy: 3000, r: BALL_R };
+    let result = null;
+    for (let i = 0; i < 200 && !result; i++) result = advanceBody(g, body, DT);
+    const bottom = body.y + BALL_R;
+    return check(result === "hit" && bottom >= GROUND_Y && bottom - GROUND_Y <= 3,
+      `hit, bottom in [${GROUND_Y}, ${GROUND_Y + 3}]`, `${result}, bottom ${bottom.toFixed(2)}`);
+  }],
+  ["T10", "Preview impact point = real explosion point (±1)", () => {
+    const g = testGame();
+    setAim(g.cannon, 25, 0.55);
+    const preview = computePreview(g);
+    fire(g);
+    for (let i = 0; i < 2000 && g.state === "IN_FLIGHT"; i++) update(g, DT);
+    const crater = g.terrain.craters[g.terrain.craters.length - 1];
+    if (!preview.hit || !crater) return check(false, "both hit", `preview ${!!preview.hit}, crater ${!!crater}`);
+    const d = Math.hypot(preview.hit.x - crater.cx, preview.hit.y - crater.cy);
+    return check(d <= 1, "distance ≤ 1", `distance ${d.toFixed(3)}`);
+  }],
+  ["T14", "Crater under cannon → it falls and rests on solid ground", () => {
+    const g = testGame();
+    const y0 = g.cannon.y;
+    addCrater(g.terrain, g.cannon.x, y0 + 10, 40);
+    for (let i = 0; i < 240; i++) update(g, DT);
+    const c = g.cannon;
+    const ok = isSolid(g.terrain, c.x, c.y + 1) && c.y > y0 + 10 && c.vy === 0;
+    return check(ok, "resting lower than before", `y ${y0.toFixed(1)} → ${c.y.toFixed(1)}, vy ${c.vy}`);
+  }],
+];
+
+const BRICK_TESTS = [
+  ["T11", "Brick on ground; crater under it → it falls", () => {
+    const t = createTerrain(false);
+    const w = createWorld();
+    const b = addBrick(w, 1400, GROUND_Y - BRICK_H / 2, BRICK_COLORS[0]);
+    runWorld(w, t, 0.2);
+    const y0 = b.y;
+    addCrater(t, 1400, GROUND_Y + 10, 40);
+    runWorld(w, t, 0.5);
+    return check(b.y - y0 > 5, "dropped > 5", `dropped ${(b.y - y0).toFixed(2)}`);
+  }],
+  ["T12", "Stack of 3; remove the bottom → the two above fall", () => {
+    const t = createTerrain(false);
+    const w = createWorld();
+    const stack = [0, 1, 2].map((i) => addBrick(w, 1400, GROUND_Y - (i + 0.5) * BRICK_H, BRICK_COLORS[i]));
+    runWorld(w, t, 0.2);
+    const before = [stack[1].y, stack[2].y];
+    w.bricks = w.bricks.filter((b) => b !== stack[0]);
+    runWorld(w, t, 0.3);
+    const d1 = stack[1].y - before[0];
+    const d2 = stack[2].y - before[1];
+    return check(d1 > 10 && d2 > 10, "both drop > 10", `${d1.toFixed(2)}, ${d2.toFixed(2)}`);
+  }],
+  ["T15", "Untouched building stands still for 3 s", () => {
+    const g = testGame(true);
+    runWorld(g.world, g.terrain, 3);
+    let maxMove = 0;
+    for (const b of g.world.bricks) maxMove = Math.max(maxMove, Math.hypot(b.x - b.homeX, b.y - b.homeY));
+    const standing = countStanding(g.world);
+    return check(maxMove < 1.5 && standing === g.startBricks, `max move < 1.5, ${g.startBricks} standing`,
+      `max move ${maxMove.toFixed(3)}, ${standing} standing`);
+  }],
+  ["T16", "Blast at the building's base knocks bricks down", () => {
+    const g = testGame(true);
+    explode(g, BUILDING_X - 50, GROUND_Y - 10);
+    runWorld(g.world, g.terrain, 1.5);
+    const standing = countStanding(g.world);
+    return check(standing < g.startBricks - 20, `< ${g.startBricks - 20} standing`, `${standing} standing`);
+  }],
+  ["T17", "Reset restores a fresh game after shots and craters", () => {
+    const g = testGame(true);
+    fire(g);
+    explode(g, BUILDING_X, GROUND_Y);
+    g.showPreview = false;
+    const r = resetGame(g);
+    const ok = r.state === "READY" && r.shots === 0 && r.terrain.craters.length === 0 &&
+      r.debris.length === 0 && !r.projectile && countStanding(r.world) === r.startBricks &&
+      r.startBricks > 0 && r.showPreview === false && r.input === g.input;
+    return check(ok, "READY, 0 shots, 0 craters, all bricks standing, input kept",
+      `${r.state}, ${r.shots} shots, ${r.terrain.craters.length} craters, ` +
+      `${countStanding(r.world)}/${r.startBricks} standing`);
+  }],
+];
+
+function runSelfTests() {
+  return [...TERRAIN_TESTS, ...FLIGHT_TESTS, ...BRICK_TESTS].map(([id, name, fn]) => {
+    let r;
+    try {
+      r = fn();
+    } catch (err) {
+      console.error(`${id} threw`, err); // reported as a failure below, never swallowed
+      r = check(false, "no exception", String(err));
+    }
+    return { id, name, pass: r.pass, expected: String(r.expected), actual: String(r.actual) };
+  });
+}
+
+function showTestResults(results) {
+  const panel = document.getElementById("test-panel");
+  panel.hidden = false;
+  panel.replaceChildren();
+  for (const r of results) {
+    const line = document.createElement("div");
+    line.className = r.pass ? "pass" : "fail";
+    line.textContent = `${r.pass ? "✓" : "✗"} ${r.id} ${r.name}` +
+      (r.pass ? "" : `  (expected ${r.expected}, got ${r.actual})`);
+    panel.appendChild(line);
+  }
+  const passed = results.filter((r) => r.pass).length;
+  const total = document.createElement("div");
+  total.className = "total";
+  total.textContent = `${passed}/${results.length} passed · v${VERSION}`;
+  panel.appendChild(total);
+  console.table(results);
+}
+
+// ===== BOOT =====
+function boot() {
+  const canvas = document.getElementById("game");
+  game = createGame({ seed: newSeed() });
+  game.view = { canvas, ctx: canvas.getContext("2d"), scale: 1 };
+  resizeCanvas(game.view);
+  window.addEventListener("resize", () => resizeCanvas(game.view));
+  installInput(canvas);
+  if (location.hash === "#test") showTestResults(runSelfTests());
+  requestAnimationFrame((now) => {
+    game.loop.last = now;
+    requestAnimationFrame(frame);
+  });
+}
+
+boot();
+</script>
+</body>
+</html>
