@@ -6,6 +6,7 @@
   Class:  CS 4500
   Agent:  Claude Code Opus 5.5, High
   Other AI used: Claude Opus 5.5 in browser for spec sheets and instructions
+  REPO: https://github.com/d-vid04/ai_lab
   How to run: open this file in any modern browser (Chrome, Firefox, Edge, Safari).
   Self-tests: open with #test at the end of the URL.
   Version: see VERSION constant below.
@@ -33,19 +34,32 @@
     background: rgba(255, 255, 255, 0.95); color: #1f2d4a;
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+    z-index: 10; /* stays readable above the name prompt and menu */
   }
   #test-panel .pass { color: #1b7f55; }
   #test-panel .fail { color: #c0392b; }
   #test-panel .total { margin-top: 6px; font-weight: 700; }
-  #menu {
+  #menu, #welcome {
     position: fixed; inset: 0;
     display: flex; align-items: center; justify-content: center;
     background: rgba(15, 27, 45, 0.45);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  #menu[hidden] { display: none; }
+  #menu[hidden], #welcome[hidden] { display: none; }
+  #welcome label { display: block; margin: 0 4px 10px; font-size: 18px; font-weight: 700; }
+  #welcome input {
+    box-sizing: border-box; width: 100%; padding: 11px 14px;
+    border: 1.5px solid rgba(31, 45, 74, 0.25); border-radius: 12px;
+    font: 500 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2d4a;
+  }
+  #welcome input:focus { outline: none; border-color: #e76f51; }
+  #welcome .bozo {
+    margin: 18px 0 14px; text-align: center;
+    font: 900 40px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: 0.04em; color: #e76f51;
+  }
   .menu-card {
-    width: min(340px, calc(100% - 32px));
+    width: min(380px, calc(100% - 32px));
     padding: 20px; border-radius: 18px;
     background: #ffffff; color: #1f2d4a;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
@@ -73,6 +87,11 @@
     font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     padding: 2px 6px; border-radius: 6px; background: #eef2f4; color: #51607a;
   }
+  .menu-card .keys { display: flex; gap: 6px; }
+  .menu-card .controls-list { max-height: calc(100vh - 200px); overflow: auto; }
+  .menu-card table.controls { margin-bottom: 4px; }
+  .menu-card table.controls td:first-child { font-weight: 600; white-space: nowrap; padding-right: 12px; }
+  .menu-card table.controls tr:first-child td { border-top: none; }
   .menu-card table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .menu-card th {
     text-align: left; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
@@ -89,24 +108,65 @@
 <body>
 <canvas id="game"></canvas>
 <div id="test-panel" hidden></div>
+<div id="welcome">
+  <form class="menu-card" id="welcome-form" autocomplete="off">
+    <section data-step="ask">
+      <h2>Before we start</h2>
+      <label for="player-name">What's your name?</label>
+      <input id="player-name" maxlength="24" required placeholder="Type your name">
+      <button type="submit">Let's go <kbd>Enter</kbd></button>
+    </section>
+    <section data-step="welcome" hidden>
+      <p class="bozo">WELCOME BOZO!</p>
+    </section>
+  </form>
+</div>
 <div id="menu" hidden>
   <div class="menu-card" role="dialog" aria-modal="true" aria-labelledby="menu-title">
     <section data-view="main">
       <h2 id="menu-title">Paused</h2>
       <button type="button" data-action="resume">Resume <kbd>Esc</kbd></button>
       <button type="button" data-action="reset">Reset game <kbd>R</kbd></button>
+      <button type="button" data-action="tamper">✋ Tamper mode
+        <span class="keys"><kbd id="tamper-state">Off</kbd><kbd>T</kbd></span></button>
       <button type="button" data-action="records">Past records</button>
-      <button type="button" data-action="sound">Sound <kbd id="sound-state">On</kbd></button>
+      <button type="button" data-action="controls">⌨ Controls</button>
+      <button type="button" data-action="song">♪ Song
+        <span class="keys"><kbd id="song-state">On</kbd><kbd>F</kbd></span></button>
+      <button type="button" data-action="sound">All sound <kbd id="sound-state">On</kbd></button>
+    </section>
+    <section data-view="controls" hidden>
+      <h2>Controls</h2>
+      <div class="controls-list">
+        <table class="controls">
+          <tbody>
+            <tr><td>Aim</td><td>Move the mouse</td></tr>
+            <tr><td>Angle</td><td><kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd></td></tr>
+            <tr><td>Power</td><td><kbd>↑</kbd> <kbd>↓</kbd> or <kbd>W</kbd> <kbd>S</kbd></td></tr>
+            <tr><td>Fire</td><td>Click or <kbd>Space</kbd></td></tr>
+            <tr><td>Tamper mode</td><td><kbd>T</kbd> or the gold button</td></tr>
+            <tr><td>· grab &amp; carry</td><td>Drag the cannon or up to 3 bricks</td></tr>
+            <tr><td>· throw</td><td>Drag quickly, then let go</td></tr>
+            <tr><td>· dig</td><td>Click the ground</td></tr>
+            <tr><td>Aim preview</td><td><kbd>P</kbd></td></tr>
+            <tr><td>Song on/off</td><td><kbd>F</kbd></td></tr>
+            <tr><td>Reset</td><td><kbd>R</kbd>, the Reset button, or click the win card</td></tr>
+            <tr><td>Pause menu</td><td><kbd>Esc</kbd></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <button type="button" data-action="back">Back</button>
     </section>
     <section data-view="records" hidden>
       <h2>Building-down records</h2>
       <p class="empty" id="records-empty">No building knocked down yet this session.</p>
       <div class="records">
         <table id="records-table" hidden>
-          <thead><tr><th>Round</th><th>Time</th><th>Shots</th></tr></thead>
+          <thead><tr><th>Player</th><th>Round</th><th>Time</th><th>Shots</th></tr></thead>
           <tbody id="records-body"></tbody>
         </table>
       </div>
+      <p class="empty" id="records-legend" hidden>✋ = Tamper mode was used that round</p>
       <button type="button" data-action="back">Back</button>
     </section>
   </div>
@@ -115,7 +175,7 @@
 "use strict";
 
 // ===== CONFIG =====
-const VERSION = "0.8.1";
+const VERSION = "0.12.1";
 
 const W = 1600;
 const H = 900;
@@ -173,10 +233,36 @@ const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
 const DEBRIS_LIFE = 1.5;
 const CLOUD_SPEED = 6;
 const MASTER_VOLUME = 0.7;
+const SONG_VOLUME = 0.32;         // background song, still under the effects
+const SONG_MENU_DUCK = 0.2;       // song volume multiplier while the Esc menu is open
+const SONG_BPM = 132;
+const SONG_LOOKAHEAD = 0.25;      // s of notes scheduled ahead of the audio clock
 const WHIZZ_VOLUME = 0.35;        // in-flight whoosh, relative to the other effects
 const IMPACT_MIN_SPEED = 70;      // units/s closing speed before a brick collision makes a sound
 const IMPACT_SOUND_GAP = 0.03;    // s between collision sounds of one kind (rubble is noisy)
-const RESET_BUTTON = { x: W - 28 - 112, y: 74, w: 112, h: 34 }; // under the status pill
+const RESET_BUTTON = { x: W - 28 - 136, y: 74, w: 136, h: 34 }; // under the status pill
+const MENU_HINT = { x: W - 28 - 136, y: 118, w: 136, h: 34 };    // under the reset button
+const SONG_BUTTON = { x: W - 28 - 172, y: 162, w: 172, h: 34 };  // under the menu hint
+const TAMPER_BUTTON = { x: 28, y: 26, w: 196, h: 36 };
+const WIN_CARD = { x: (W - 500) / 2, y: (H - 176) / 2 - 60, w: 500, h: 176 };
+const PLAYER_NAME = "BOZO";       // whatever name they type, this is what the game calls them
+const WELCOME_MS = 1800;          // how long "WELCOME BOZO!" shows before play starts
+
+// Tamper mode: the mouse becomes a hand that carries the cannon or bricks.
+const GRAB_R = 34;                // hand reach for bricks
+const MAX_GRAB = 3;               // bricks picked up at once
+const CANNON_GRAB_R = 36;
+const CANNON_EDGE = 24;           // keep the cannon inside the world
+// The cannon is a rigid body in the brick world: a box around its carriage and wheels that
+// never rotates (so it always lands upright) and weighs about six bricks.
+const CANNON_HW = 20;
+const CANNON_HH = 13;
+const CANNON_MASS = 16;
+const GRAB_STIFFNESS = 25;        // 1/s: how hard held bricks are pulled toward the hand
+const GRAB_MAX_SPEED = 2000;
+const THROW_MAX_SPEED = 1800;
+const POINTER_TRAIL_MS = 100;     // drag window used to measure the throw velocity
+const POINTER_STILL_MS = 60;      // no movement this long before release = a drop, not a throw
 
 const COLORS = {
   skyTop: "#cfeaec",
@@ -199,6 +285,11 @@ const COLORS = {
   woodInk: "#3b2314",
   brass: "#f6bd60",
   brickInk: "#5a2415",
+  skin: "#ffd9b3",
+  goldTop: "#ffe08a",
+  goldBottom: "#f2b53c",
+  goldEdge: "#b7811f",
+  goldInk: "#5a3a08",
   preview: "31, 45, 74",
   hud: "rgba(31, 45, 74, 0.7)",
 };
@@ -454,21 +545,31 @@ const TERRAIN_BODY = { x: 0, y: 0, vx: 0, vy: 0, w: 0, invMass: 0, invI: 0 };
 // Corners and edge midpoints of a unit box, sampled against the terrain.
 const BOX_SAMPLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
 
+// All moving bodies: the bricks plus, in a game world, the cannon.
+function worldBodies(world) {
+  return world.cannon ? [...world.bricks, world.cannon] : world.bricks;
+}
+
 function stepWorld(world, terrain, dt) {
   world.impacts = [];
-  updateArbiters(world, terrain);
-  for (const b of world.bricks) b.vy += GRAVITY * dt;
+  const bodies = worldBodies(world);
+  updateArbiters(world, terrain, bodies);
+  for (const b of bodies) b.vy += GRAVITY * dt;
   // Solve from the ground up so support reaches the top of tall stacks in fewer iterations.
   const arbiters = [...world.arbiters.values()].sort((p, q) => arbiterDepth(q) - arbiterDepth(p));
   for (const arb of arbiters) preStep(arb, 1 / dt, world.impacts);
   for (let i = 0; i < SOLVER_ITERATIONS; i++) {
     for (const arb of arbiters) applyImpulses(arb);
   }
-  for (const b of world.bricks) {
+  for (const b of bodies) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.a += b.w * dt;
   }
+}
+
+function bodyReach(b) {
+  return Math.hypot(b.hw, b.hh) + CONTACT_MARGIN;
 }
 
 function arbiterDepth(arb) {
@@ -476,21 +577,23 @@ function arbiterDepth(arb) {
 }
 
 // Broadphase (sort and sweep on x) + narrowphase, keeping old impulses for warm starting.
-function updateArbiters(world, terrain) {
+function updateArbiters(world, terrain, bodies) {
   const seen = new Set();
-  const ext = Math.hypot((BRICK_W - BRICK_GAP) / 2, BRICK_H / 2) + CONTACT_MARGIN;
-  const sorted = [...world.bricks].sort((p, q) => p.x - q.x);
+  const maxReach = Math.max(...bodies.map(bodyReach), 0);
+  const sorted = [...bodies].sort((p, q) => p.x - q.x);
   for (let i = 0; i < sorted.length; i++) {
     const A = sorted[i];
-    for (let j = i + 1; j < sorted.length && sorted[j].x - A.x < 2 * ext; j++) {
+    const reachA = bodyReach(A);
+    for (let j = i + 1; j < sorted.length && sorted[j].x - A.x < reachA + maxReach; j++) {
       const B = sorted[j];
-      if (Math.abs(B.y - A.y) >= 2 * ext) continue;
+      const reach = reachA + bodyReach(B);
+      if (Math.abs(B.x - A.x) >= reach || Math.abs(B.y - A.y) >= reach) continue;
       const [b1, b2] = A.id < B.id ? [A, B] : [B, A];
       const contacts = collideBoxes(b1, b2);
       if (contacts.length) mergeArbiter(world, seen, b1.id * 65536 + b2.id, b1, b2, contacts, BRICK_FRICTION);
     }
   }
-  for (const b of world.bricks) {
+  for (const b of bodies) {
     const contacts = terrainContacts(terrain, b);
     if (contacts.length) mergeArbiter(world, seen, -b.id, TERRAIN_BODY, b, contacts, TERRAIN_FRICTION);
   }
@@ -715,18 +818,27 @@ function blastBricks(world, x, y, rng) {
 }
 
 // ===== CANNON & AIM =====
-function createCannon(terrain) {
+// (x, y) is the centre of the collision box; the wheels rest at cannonBase().
+function createCannon(terrain, world) {
   return {
+    id: world.nextId++,
     x: CANNON_X,
-    y: groundBelow(terrain, CANNON_X, 0),
-    vy: 0,
+    y: groundBelow(terrain, CANNON_X, 0) - CANNON_HH,
+    a: 0, vx: 0, vy: 0, w: 0,
+    hw: CANNON_HW, hh: CANNON_HH,
+    invMass: 1 / CANNON_MASS,
+    invI: 0,
     angle: DEFAULT_ANGLE,
     power: DEFAULT_POWER,
   };
 }
 
+function cannonBase(cannon) {
+  return cannon.y + cannon.hh;
+}
+
 function cannonPivot(cannon) {
-  return { x: cannon.x, y: cannon.y - CANNON_PIVOT_H };
+  return { x: cannon.x, y: cannonBase(cannon) - CANNON_PIVOT_H };
 }
 
 function muzzle(cannon) {
@@ -758,20 +870,14 @@ function applyKeyAim(game, dt) {
   if (da || dp) setAim(c, c.angle + da, c.power + dp);
 }
 
-// The cannon drops when a crater opens under it, until the point just below it is solid again.
-function updateCannonFall(cannon, terrain, dt) {
-  if (isSolid(terrain, cannon.x, cannon.y + 1)) {
-    cannon.vy = 0;
-    return;
-  }
-  cannon.vy += GRAVITY * dt;
-  const next = cannon.y + cannon.vy * dt;
-  const ground = groundBelow(terrain, cannon.x, cannon.y + 1);
-  if (next + 1 >= ground) {
-    cannon.y = ground - 1;
-    cannon.vy = 0;
-  } else {
-    cannon.y = next;
+// The physics moves the cannon; this only keeps it inside the side walls of the world.
+function confineCannon(cannon) {
+  if (cannon.x < CANNON_EDGE) {
+    cannon.x = CANNON_EDGE;
+    cannon.vx = Math.max(0, cannon.vx);
+  } else if (cannon.x > W - CANNON_EDGE) {
+    cannon.x = W - CANNON_EDGE;
+    cannon.vx = Math.min(0, cannon.vx);
   }
 }
 
@@ -845,14 +951,20 @@ function updateProjectile(game, dt) {
   else explode(game, body.x, body.y, result);
 }
 
-// `hit` is "brick" or "ground" and only picks the sound.
-function explode(game, x, y, hit) {
-  if (game.audio) (hit === "brick" ? playBrickHitSound : playGroundHitSound)(game.audio, x);
+// Crater, destroyed bricks and flung bricks. Shared by cannonball hits and by digging in
+// Tamper mode; each caller plays its own sound.
+function blastAt(game, x, y) {
   addCrater(game.terrain, x, y, CRATER_R);
   destroyBricksNear(game, x, y);
   blastBricks(game.world, x, y, game.rng);
-  // Cannon footing and brick support need no pass here: updateCannonFall and the rigid-body
-  // solver both read the terrain every step, so the new crater takes effect on the next update.
+  // Cannon footing and brick support need no pass here: the rigid-body solver reads the
+  // terrain every step, so the new crater takes effect on the next update.
+}
+
+// `hit` is "brick" or "ground" and only picks the sound.
+function explode(game, x, y, hit) {
+  if (game.audio) (hit === "brick" ? playBrickHitSound : playGroundHitSound)(game.audio, x);
+  blastAt(game, x, y);
   game.preview = null;
   setState(game, "RELOADING");
 }
@@ -903,6 +1015,98 @@ function updateDebris(game, dt) {
   game.debris = game.debris.filter((p) => p.age < DEBRIS_LIFE);
 }
 
+// ===== TAMPER =====
+// Tamper mode: the hand grabs the cannon or up to MAX_GRAB bricks and carries them; letting
+// go keeps the hand's recent velocity, so a quick drag throws. Clicking bare ground digs a
+// crater with the same blast as a cannonball.
+
+function bricksInReach(world, p) {
+  return world.bricks
+    .map((b) => ({ b, d: Math.hypot(b.x - p.x, b.y - p.y) }))
+    .filter((h) => h.d < GRAB_R)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAX_GRAB)
+    .map((h) => h.b);
+}
+
+function cannonInReach(cannon, p) {
+  return Math.hypot(p.x - cannon.x, p.y - cannon.y) < CANNON_GRAB_R;
+}
+
+// Returns true when something is now held (the caller then captures the pointer).
+function tamperGrab(game, p) {
+  const c = game.cannon;
+  const held = cannonInReach(c, p) ? [c] : bricksInReach(game.world, p);
+  if (held.length) {
+    game.grab = { cannon: held[0] === c, items: held.map((b) => ({ b, dx: b.x - p.x, dy: b.y - p.y })) };
+    game.tampered = true;
+    return true;
+  }
+  if (isSolid(game.terrain, p.x, p.y)) {
+    if (game.audio) playDigSound(game.audio, p.x);
+    blastAt(game, p.x, p.y);
+    game.tampered = true;
+  }
+  return false;
+}
+
+function tamperRelease(game, v) {
+  if (!game.grab) return;
+  for (const h of game.grab.items) {
+    h.b.vx = v.vx;
+    h.b.vy = v.vy;
+  }
+  game.grab = null;
+}
+
+// Runs every step before the physics. Held bodies (cannon included) are pulled toward the hand
+// by velocity, not teleported, so the solver still lets them shove and be blocked by others.
+function applyGrab(game, dt) {
+  const g = game.grab;
+  const p = game.input.pointer;
+  if (!g || !p) return;
+  g.items = g.items.filter((h) => h.b === game.cannon || game.world.bricks.includes(h.b)); // blasted bricks are gone
+  if (!g.items.length) {
+    game.grab = null;
+    return;
+  }
+  for (const h of g.items) {
+    let vx = (p.x + h.dx - h.b.x) * GRAB_STIFFNESS;
+    let vy = (clamp(p.y + h.dy, -200, H - BEDROCK) - h.b.y) * GRAB_STIFFNESS;
+    const speed = Math.hypot(vx, vy);
+    if (speed > GRAB_MAX_SPEED) {
+      vx *= GRAB_MAX_SPEED / speed;
+      vy *= GRAB_MAX_SPEED / speed;
+    }
+    h.b.vx = vx;
+    h.b.vy = vy - GRAVITY * dt; // stepWorld adds gravity back
+    h.b.w *= 0.9;
+  }
+}
+
+function trackPointer(input, p, t) {
+  input.trail.push({ x: p.x, y: p.y, t });
+  while (input.trail.length > 2 && t - input.trail[0].t > POINTER_TRAIL_MS) input.trail.shift();
+}
+
+// Average hand velocity over the last POINTER_TRAIL_MS, in world units per second.
+function pointerVelocity(input, now) {
+  const trail = input.trail;
+  const last = trail[trail.length - 1];
+  if (trail.length < 2 || now - last.t > POINTER_STILL_MS) return { vx: 0, vy: 0 };
+  const first = trail[0];
+  const seconds = (last.t - first.t) / 1000;
+  if (seconds <= 0) return { vx: 0, vy: 0 };
+  let vx = (last.x - first.x) / seconds;
+  let vy = (last.y - first.y) / seconds;
+  const speed = Math.hypot(vx, vy);
+  if (speed > THROW_MAX_SPEED) {
+    vx *= THROW_MAX_SPEED / speed;
+    vy *= THROW_MAX_SPEED / speed;
+  }
+  return { vx, vy };
+}
+
 // ===== AUDIO =====
 // Every sound is synthesised with the Web Audio API, so there are no audio files: filtered
 // noise for blasts, whooshes and grit, pitched oscillators for thumps, whistles and clacks.
@@ -917,7 +1121,10 @@ function createAudio(ctx) {
   const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
   const data = noise.getChannelData(0);
   for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-  return { ctx, master, noise, enabled: true, whizz: null, lastImpact: { brick: -1, ground: -1 } };
+  const song = { gain: ctx.createGain(), playing: false, target: 0, step: 0, loop: 0, nextTime: 0 };
+  song.gain.gain.value = 0;
+  song.gain.connect(master);
+  return { ctx, master, noise, song, enabled: true, whizz: null, lastImpact: { brick: -1, ground: -1 } };
 }
 
 function setSoundEnabled(audio, enabled) {
@@ -929,8 +1136,9 @@ function panFor(x) {
   return clamp((x / W) * 2 - 1, -1, 1) * 0.7;
 }
 
-// Percussive envelope → stereo position → master. Sources connect into the returned node.
-function voiceOut(audio, x, peak, decay, t0) {
+// Percussive envelope → stereo position → `out` (the master, or the song's own gain).
+// Sources connect into the returned node.
+function voiceOut(audio, x, peak, decay, t0, out) {
   const gain = audio.ctx.createGain();
   gain.gain.setValueAtTime(0.0001, t0);
   gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.005);
@@ -938,11 +1146,11 @@ function voiceOut(audio, x, peak, decay, t0) {
   const pan = audio.ctx.createStereoPanner();
   pan.pan.value = panFor(x);
   gain.connect(pan);
-  pan.connect(audio.master);
+  pan.connect(out);
   return gain;
 }
 
-function noiseBurst(audio, x, { type, from, to, q = 1, peak, decay, t0 = audio.ctx.currentTime }) {
+function noiseBurst(audio, x, { type, from, to, q = 1, peak, decay, t0 = audio.ctx.currentTime, out = audio.master }) {
   const src = audio.ctx.createBufferSource();
   src.buffer = audio.noise;
   const filter = audio.ctx.createBiquadFilter();
@@ -951,17 +1159,17 @@ function noiseBurst(audio, x, { type, from, to, q = 1, peak, decay, t0 = audio.c
   filter.frequency.setValueAtTime(from, t0);
   filter.frequency.exponentialRampToValueAtTime(to, t0 + decay);
   src.connect(filter);
-  filter.connect(voiceOut(audio, x, peak, decay, t0));
+  filter.connect(voiceOut(audio, x, peak, decay, t0, out));
   src.start(t0, Math.random() * 0.5);
   src.stop(t0 + decay + 0.05);
 }
 
-function tone(audio, x, { wave = "sine", from, to, peak, decay, t0 = audio.ctx.currentTime }) {
+function tone(audio, x, { wave = "sine", from, to, peak, decay, t0 = audio.ctx.currentTime, out = audio.master }) {
   const osc = audio.ctx.createOscillator();
   osc.type = wave;
   osc.frequency.setValueAtTime(from, t0);
   osc.frequency.exponentialRampToValueAtTime(to, t0 + decay);
-  osc.connect(voiceOut(audio, x, peak, decay, t0));
+  osc.connect(voiceOut(audio, x, peak, decay, t0, out));
   osc.start(t0);
   osc.stop(t0 + decay + 0.05);
 }
@@ -986,6 +1194,23 @@ function playBrickHitSound(audio, x) {
   tone(audio, x, { from: 110, to: 40, peak: 0.75, decay: 0.35 });
   for (let i = 0; i < 6; i++) {
     playClack(audio, x + (Math.random() - 0.5) * 80, 0.4 + Math.random() * 0.4, t + 0.04 + Math.random() * 0.35);
+  }
+}
+
+// Shovel into dirt: a gritty scrape with a soft thump, then the loosened clump lands with a
+// dull thud and settles in a few muffled bumps. Everything after the scrape is low-passed,
+// because bright noise here reads as crumpling paper rather than soil.
+function playDigSound(audio, x) {
+  const t = audio.ctx.currentTime;
+  noiseBurst(audio, x, { type: "bandpass", from: 1400, to: 500, q: 1.4, peak: 0.55, decay: 0.16, t0: t });
+  tone(audio, x, { from: 120, to: 70, peak: 0.45, decay: 0.12, t0: t + 0.02 });
+  noiseBurst(audio, x, { type: "lowpass", from: 700, to: 150, peak: 0.5, decay: 0.25, t0: t + 0.17 });
+  tone(audio, x, { from: 90, to: 55, peak: 0.4, decay: 0.16, t0: t + 0.17 });
+  for (let i = 0; i < 4; i++) {
+    const t0 = t + 0.3 + i * 0.07 + Math.random() * 0.04;
+    const strength = 0.7 - i * 0.12;
+    noiseBurst(audio, x, { type: "lowpass", from: 500, to: 180, peak: 0.2 * strength, decay: 0.07, t0 });
+    tone(audio, x, { from: 140, to: 90, peak: 0.1 * strength, decay: 0.06, t0 });
   }
 }
 
@@ -1066,6 +1291,89 @@ function syncWhizz(audio, body) {
   w.pan.pan.setTargetAtTime(panFor(body.x), t, 0.05);
 }
 
+// ----- Background song -----
+// A bouncy 8-bar loop in C: marimba melody over an oom-pah bass with offbeat chord stabs, a
+// soft kick and a woodblock tick. Every other pass the melody drops an octave for variety.
+// Notes are MIDI numbers (60 = middle C) on an eighth-note grid; REST is silence.
+const REST = null;
+const SONG_MELODY = [
+  [72, REST, 76, 79, 76, REST, 72, REST], // C
+  [69, REST, 72, 76, 74, 72, 69, REST],   // Am
+  [65, REST, 69, 72, 77, REST, 76, 74],   // F
+  [74, REST, 71, REST, 67, 69, 71, REST], // G
+  [72, 74, 76, REST, 79, REST, 76, REST], // C
+  [81, REST, 79, 76, 72, REST, 76, REST], // Am
+  [77, 76, 74, 72, 69, REST, 72, 74],     // F
+  [67, 71, 74, 77, 76, REST, 74, REST],   // G7, leading back to C
+];
+const SONG_CHORDS = [
+  { root: 48, fifth: 55, triad: [60, 64, 67] },
+  { root: 45, fifth: 52, triad: [57, 60, 64] },
+  { root: 41, fifth: 48, triad: [57, 60, 65] },
+  { root: 43, fifth: 50, triad: [55, 59, 62] },
+  { root: 48, fifth: 55, triad: [60, 64, 67] },
+  { root: 45, fifth: 52, triad: [57, 60, 64] },
+  { root: 41, fifth: 48, triad: [57, 60, 65] },
+  { root: 43, fifth: 50, triad: [53, 59, 62] },
+];
+const SONG_STEPS = SONG_MELODY.length * 8;
+
+function midiFreq(note) {
+  return 440 * 2 ** ((note - 69) / 12);
+}
+
+function playSongStep(audio, step, loop, t0) {
+  const out = audio.song.gain;
+  const bar = Math.floor(step / 8);
+  const beat = step % 8;
+  const chord = SONG_CHORDS[bar];
+  const note = SONG_MELODY[bar][beat];
+  if (note !== REST) {
+    const f = midiFreq(loop % 2 ? note - 12 : note);
+    tone(audio, W * 0.6, { from: f, to: f * 0.999, peak: 0.32, decay: 0.28, t0, out }); // marimba body
+    tone(audio, W * 0.6, { from: f * 4, to: f * 4, peak: 0.05, decay: 0.04, t0, out });  // mallet tick
+  }
+  if (beat === 0 || beat === 4) {
+    const f = midiFreq(beat === 0 ? chord.root : chord.fifth);
+    tone(audio, W * 0.45, { wave: "triangle", from: f, to: f * 0.98, peak: 0.45, decay: 0.22, t0, out });
+    tone(audio, W / 2, { from: 140, to: 50, peak: 0.3, decay: 0.1, t0, out }); // soft kick
+  }
+  if (beat === 2 || beat === 6) {
+    for (const n of chord.triad) {
+      tone(audio, W * 0.4, { wave: "triangle", from: midiFreq(n), to: midiFreq(n), peak: 0.08, decay: 0.09, t0, out });
+    }
+    tone(audio, W * 0.55, { from: 1250, to: 1150, peak: 0.05, decay: 0.025, t0, out }); // woodblock
+  }
+}
+
+// Called every frame: fades the song in, out, or down (while the menu is open), and keeps
+// SONG_LOOKAHEAD seconds of notes scheduled on the audio clock so it keeps time even if
+// frames stutter.
+function syncSong(audio, on, ducked) {
+  const song = audio.song;
+  const t = audio.ctx.currentTime;
+  const target = on ? SONG_VOLUME * (ducked ? SONG_MENU_DUCK : 1) : 0;
+  if (target !== song.target) {
+    song.gain.gain.setTargetAtTime(target, t, target > song.target ? 0.3 : 0.08);
+    song.target = target;
+  }
+  if (on && !song.playing) {
+    song.playing = true;
+    song.nextTime = t + 0.05;
+  } else if (!on) {
+    song.playing = false;
+  }
+  if (!song.playing) return;
+  if (song.nextTime < t - 0.1) song.nextTime = t + 0.05; // tab was hidden: skip, don't burst
+  const stepLen = 60 / SONG_BPM / 2;
+  while (song.nextTime < t + SONG_LOOKAHEAD) {
+    playSongStep(audio, song.step, song.loop, song.nextTime);
+    song.step = (song.step + 1) % SONG_STEPS;
+    if (song.step === 0) song.loop += 1;
+    song.nextTime += stepLen;
+  }
+}
+
 // ===== GAME STATE =====
 let game = null;
 
@@ -1086,9 +1394,10 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
   const rng = makeRng(seed);
   const world = createWorld();
   if (withBuilding) createBuilding(world, rng);
+  world.cannon = createCannon(terrain, world);
   return {
     seed, rng, terrain, world,
-    cannon: createCannon(terrain),
+    cannon: world.cannon,
     projectile: null,
     debris: [],
     clouds: createClouds(),
@@ -1100,15 +1409,18 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
     startBricks: world.bricks.length,
     preview: null,
     showPreview: true,
-    input: { keys: new Set(), hoverReset: false },
+    input: { keys: new Set(), hover: null, pointer: null, trail: [], tamperMode: false },
+    grab: null,
+    tampered: false,
     view: null,
     audio: null,
     loop: { last: 0, acc: 0 },
-    session: { round: 1, records: [] }, // in memory only: gone when the page closes
+    session: { round: 1, records: [], songOn: true }, // in memory only: gone when the page closes
   };
 }
 
-// New terrain and building; the canvas, input, loop, sound and session records carry over.
+// New terrain and building; the canvas, input, loop, sound and session records carry over
+// (Tamper mode is switched off).
 function resetGame(old) {
   const fresh = createGame({ seed: newSeed() });
   fresh.view = old.view;
@@ -1118,7 +1430,13 @@ function resetGame(old) {
   fresh.showPreview = old.showPreview;
   fresh.session = old.session;
   fresh.session.round += 1;
+  fresh.input.tamperMode = false; // every round starts in normal aiming mode
   return fresh;
+}
+
+// Lives in the session, so a reset never changes it.
+function toggleSong(game) {
+  game.session.songOn = !game.session.songOn;
 }
 
 function setState(game, state) {
@@ -1151,7 +1469,9 @@ function updateState(game, dt) {
 // The clock runs from the first shot, so time spent lining up that shot is free.
 function winRound(game) {
   setState(game, "WON");
-  game.session.records.push({ round: game.session.round, time: game.elapsed, shots: game.shots });
+  game.session.records.push({
+    round: game.session.round, time: game.elapsed, shots: game.shots, tampered: game.tampered,
+  });
 }
 
 function updateClouds(clouds, dt) {
@@ -1165,8 +1485,9 @@ function update(game, dt) {
   if (game.shots > 0 && game.state !== "WON") game.elapsed += dt;
   updateClouds(game.clouds, dt);
   applyKeyAim(game, dt);
-  updateCannonFall(game.cannon, game.terrain, dt);
+  applyGrab(game, dt);
   stepWorld(game.world, game.terrain, dt);
+  confineCannon(game.cannon);
   if (game.audio) playCollisionSounds(game.audio, game.world.impacts);
   removeLostBricks(game.world);
   updateProjectile(game, dt);
@@ -1252,7 +1573,7 @@ function drawFarHills(ctx) {
 }
 
 // Cartoon brick: warm fill, light top bevel, darker lip, thick ink outline.
-function drawBrick(ctx, b) {
+function drawBrick(ctx, b, highlighted) {
   const w = BRICK_W - 1;
   const h = BRICK_H - 1;
   const shade = BRICK_SHADES.get(b.color);
@@ -1272,12 +1593,18 @@ function drawBrick(ctx, b) {
   ctx.strokeStyle = COLORS.brickInk;
   ctx.lineWidth = 1.5;
   ctx.stroke();
+  if (highlighted) {
+    roundRectPath(ctx, -w / 2 - 2, -h / 2 - 2, w + 4, h + 4, 4.5);
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
-function drawBricks(ctx, bricks) {
+function drawBricks(ctx, bricks, highlighted) {
   ctx.lineJoin = "round";
-  for (const b of bricks) drawBrick(ctx, b);
+  for (const b of bricks) drawBrick(ctx, b, highlighted.has(b));
 }
 
 function barrelHalfHeight(x) {
@@ -1354,7 +1681,7 @@ function drawBarrel(ctx, cannon) {
 }
 
 function drawCarriage(ctx, cannon) {
-  const cy = cannon.y - 8;
+  const cy = cannonBase(cannon) - 8;
   ctx.lineJoin = "round";
   ctx.beginPath();
   ctx.arc(cannon.x, cy, 18, Math.PI, 0);
@@ -1408,8 +1735,9 @@ function drawWheel(ctx, x, y, r) {
 function drawCannon(ctx, cannon) {
   drawBarrel(ctx, cannon);
   drawCarriage(ctx, cannon);
-  drawWheel(ctx, cannon.x - 11, cannon.y - 9, 9);
-  drawWheel(ctx, cannon.x + 11, cannon.y - 9, 9);
+  const base = cannonBase(cannon);
+  drawWheel(ctx, cannon.x - 11, base - 9, 9);
+  drawWheel(ctx, cannon.x + 11, base - 9, 9);
 }
 
 function drawBall(ctx, body) {
@@ -1472,8 +1800,8 @@ function drawStatusPill(ctx, state) {
   ctx.letterSpacing = "0px";
 }
 
-function drawResetButton(ctx, hover) {
-  const { x, y, w, h } = RESET_BUTTON;
+function drawPillBackground(ctx, rect, hover) {
+  const { x, y, w, h } = rect;
   ctx.fillStyle = "rgba(15, 27, 45, 0.08)";
   roundRectPath(ctx, x, y + 3, w, h, h / 2);
   ctx.fill();
@@ -1483,13 +1811,133 @@ function drawResetButton(ctx, hover) {
   ctx.strokeStyle = hover ? "#e76f51" : "rgba(31, 45, 74, 0.18)";
   ctx.lineWidth = 1.5;
   ctx.stroke();
+}
+
+// Key cap + label, centred in the pill: shows the hotkey for every on-canvas button.
+function drawKeyLabel(ctx, rect, key, label, capFill, ink) {
   ctx.font = `700 14px ${FONT}`;
   ctx.letterSpacing = "1.6px";
-  ctx.fillStyle = COLORS.navy;
+  const labelW = ctx.measureText(label).width;
+  ctx.font = `700 11px ${FONT}`;
+  ctx.letterSpacing = "0.5px";
+  const capW = Math.max(22, ctx.measureText(key).width + 12);
+  const x0 = rect.x + (rect.w - (capW + 10 + labelW)) / 2;
+  const cy = rect.y + rect.h / 2;
+  roundRectPath(ctx, x0, cy - 10, capW, 20, 5);
+  ctx.fillStyle = capFill;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(31, 45, 74, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = ink;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("↻ RESET", x + w / 2, y + h / 2 + 1);
+  ctx.fillText(key, x0 + capW / 2, cy + 1);
+  ctx.font = `700 14px ${FONT}`;
+  ctx.letterSpacing = "1.6px";
+  ctx.textAlign = "left";
+  ctx.fillText(label, x0 + capW + 10, cy + 1);
   ctx.letterSpacing = "0px";
+}
+
+function drawResetButton(ctx, hover) {
+  drawPillBackground(ctx, RESET_BUTTON, hover);
+  drawKeyLabel(ctx, RESET_BUTTON, "R", "↻ RESET", "#eef2f4", COLORS.navy);
+}
+
+// Tells the player Esc opens the pause menu (and is clickable itself).
+function drawMenuHint(ctx, hover) {
+  drawPillBackground(ctx, MENU_HINT, hover);
+  drawKeyLabel(ctx, MENU_HINT, "ESC", "MENU", "#eef2f4", COLORS.navy);
+}
+
+function drawSongButton(ctx, on, hover) {
+  drawPillBackground(ctx, SONG_BUTTON, hover);
+  drawKeyLabel(ctx, SONG_BUTTON, "F", `♪ SONG · ${on ? "ON" : "OFF"}`, "#eef2f4", on ? COLORS.navy : "#8a94a6");
+}
+
+function drawTamperButton(ctx, active, hover) {
+  const { x, y, w, h } = TAMPER_BUTTON;
+  ctx.fillStyle = "rgba(15, 27, 45, 0.1)";
+  roundRectPath(ctx, x, y + 3, w, h, h / 2);
+  ctx.fill();
+  const grad = ctx.createLinearGradient(0, y, 0, y + h);
+  grad.addColorStop(0, hover || active ? "#fff0b3" : COLORS.goldTop);
+  grad.addColorStop(1, active ? "#e89a1e" : COLORS.goldBottom);
+  ctx.fillStyle = grad;
+  roundRectPath(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.strokeStyle = active ? COLORS.goldInk : COLORS.goldEdge;
+  ctx.lineWidth = active ? 2.6 : 1.8;
+  ctx.stroke();
+  drawKeyLabel(ctx, TAMPER_BUTTON, "T", `✋ TAMPER${active ? " · ON" : ""}`, "#fff6d6", COLORS.goldInk);
+  if (!active) return;
+  ctx.font = `600 15px ${FONT}`;
+  ctx.fillStyle = COLORS.hud;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Grab the cannon or bricks · fling to throw · click ground to dig", x + 6, y + h + 22);
+}
+
+// Cartoon hand that replaces the cursor in Tamper mode; a fist while holding.
+function drawHand(ctx, p, closed) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.fillStyle = COLORS.skin;
+  if (closed) {
+    for (const fx of [-7.5, -2.5, 2.5, 7.5]) {
+      circlePath(ctx, fx, -6, 3.6);
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else {
+    for (const [fx, len] of [[-8, 11], [-3, 14], [2, 13.5], [7, 10.5]]) {
+      roundRectPath(ctx, fx - 2.4, -6 - len, 4.8, len + 4, 2.4);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+  ctx.save();
+  ctx.translate(-10, 2);
+  ctx.rotate(closed ? -0.3 : -0.9);
+  roundRectPath(ctx, -2.5, -9, 5, 11, 2.5); // thumb
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  roundRectPath(ctx, -11, -7, 22, 17, 6); // palm
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawReachRing(ctx, x, y, r) {
+  ctx.setLineDash([5, 5]);
+  circlePath(ctx, x, y, r);
+  ctx.strokeStyle = "rgba(31, 45, 74, 0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function tamperHighlights(game) {
+  if (game.grab) return new Set(game.grab.items.map((h) => h.b));
+  const p = game.input.pointer;
+  if (!game.input.tamperMode || !p || game.input.hover || game.paused) return new Set();
+  if (cannonInReach(game.cannon, p)) return new Set();
+  return new Set(bricksInReach(game.world, p));
+}
+
+function drawTamperOverlay(ctx, game) {
+  const p = game.input.pointer;
+  if (!game.input.tamperMode || !p || game.input.hover || game.paused) return;
+  const c = game.cannon;
+  const holdingCannon = game.grab && game.grab.cannon;
+  if (holdingCannon || (!game.grab && cannonInReach(c, p))) drawReachRing(ctx, c.x, c.y, CANNON_GRAB_R);
+  else if (!game.grab) drawReachRing(ctx, p.x, p.y, GRAB_R);
+  drawHand(ctx, p, Boolean(game.grab));
 }
 
 function drawHud(ctx, game) {
@@ -1515,25 +1963,41 @@ function formatTime(seconds) {
   return `${m}:${(seconds - m * 60).toFixed(1).padStart(4, "0")}`;
 }
 
-function drawWinCard(ctx, shots, seconds) {
-  const w = 440;
-  const h = 132;
-  const x = (W - w) / 2;
-  const y = (H - h) / 2 - 60;
+function winTaunt(shots) {
+  if (shots <= 1) return "DID YOU CHEAT BOZO?";
+  if (shots === 2) return "YOU FOUND THE STRAT BOZO!";
+  if (shots <= 4) return "GOOD JOB BOZO!";
+  if (shots <= 6) return "OK WORK BOZO!";
+  if (shots <= 8) return "COULD BE BETTER BOZO!";
+  return "UNINSTALL ALREADY BOZO!";
+}
+
+function drawWinCard(ctx, shots, seconds, hover) {
+  const { x, y, w, h } = WIN_CARD;
   ctx.fillStyle = "rgba(15, 27, 45, 0.12)";
   roundRectPath(ctx, x, y + 6, w, h, 22);
   ctx.fill();
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = hover ? "#fdf1e7" : "#ffffff";
   roundRectPath(ctx, x, y, w, h, 22);
   ctx.fill();
+  if (hover) {
+    ctx.strokeStyle = "#e76f51";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  ctx.fillStyle = "#e76f51";
+  ctx.font = `900 24px ${FONT}`;
+  ctx.letterSpacing = "1.5px";
+  ctx.fillText(winTaunt(shots), W / 2, y + 42);
+  ctx.letterSpacing = "0px";
   ctx.fillStyle = COLORS.navy;
   ctx.font = `800 30px ${FONT}`;
-  ctx.fillText(`Building down in ${shots} shot${shots === 1 ? "" : "s"}`, W / 2, y + 54);
+  ctx.fillText(`Building down in ${shots} shot${shots === 1 ? "" : "s"}`, W / 2, y + 90);
   ctx.fillStyle = COLORS.hud;
   ctx.font = `500 17px ${FONT}`;
-  ctx.fillText(`Time ${formatTime(seconds)}  ·  Press R to play again`, W / 2, y + 94);
+  ctx.fillText(`Time ${formatTime(seconds)}  ·  Click here or press R to play again`, W / 2, y + 134);
 }
 
 function render(game) {
@@ -1544,15 +2008,20 @@ function render(game) {
   drawClouds(ctx, game.clouds);
   drawFarHills(ctx);
   ctx.drawImage(game.terrain.layer, 0, 0, W, H);
-  drawBricks(ctx, game.world.bricks);
+  drawBricks(ctx, game.world.bricks, tamperHighlights(game));
   drawCannon(ctx, game.cannon);
   if (game.projectile) drawBall(ctx, game.projectile);
   drawDebris(ctx, game.debris);
   if (game.state === "READY" && game.showPreview && game.preview) drawPreview(ctx, game.preview);
   drawStatusPill(ctx, game.paused ? "PAUSED" : game.state);
-  drawResetButton(ctx, game.input.hoverReset);
+  const hover = game.input.hover;
+  drawResetButton(ctx, hover === "reset");
+  drawMenuHint(ctx, hover === "menu");
+  drawSongButton(ctx, game.session.songOn, hover === "song");
+  drawTamperButton(ctx, game.input.tamperMode, hover === "tamper");
   drawHud(ctx, game);
-  if (game.state === "WON") drawWinCard(ctx, game.shots, game.elapsed);
+  if (game.state === "WON") drawWinCard(ctx, game.shots, game.elapsed, hover === "win");
+  drawTamperOverlay(ctx, game);
 }
 
 // ===== INPUT =====
@@ -1574,10 +2043,11 @@ function toWorld(canvas, e) {
 // Browsers only allow audio after a user gesture, so the first click or key creates it.
 function ensureAudio() {
   if (!game.audio) game.audio = createAudio(new AudioContext());
-  if (!game.paused && game.audio.ctx.state === "suspended") game.audio.ctx.resume();
+  if (game.audio.ctx.state === "suspended") game.audio.ctx.resume();
 }
 
 function onKeyDown(e) {
+  if (isWelcomeOpen()) return; // the name box gets every key
   ensureAudio();
   if (e.code === "Escape") {
     e.preventDefault();
@@ -1586,6 +2056,8 @@ function onKeyDown(e) {
   }
   if (game.paused) {
     if (e.code === "KeyR" && !e.repeat) onMenuAction("reset");
+    if (e.code === "KeyT" && !e.repeat) onMenuAction("tamper");
+    if (e.code === "KeyF" && !e.repeat) onMenuAction("song");
     return; // menu buttons handle their own Enter/Space
   }
   if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
@@ -1593,50 +2065,109 @@ function onKeyDown(e) {
   if (e.repeat) return;
   if (e.code === "Space") fire(game);
   else if (e.code === "KeyR") game = resetGame(game);
-  else if (e.code === "KeyT") game.showPreview = !game.showPreview;
+  else if (e.code === "KeyT") toggleTamper(game);
+  else if (e.code === "KeyF") toggleSong(game);
+  else if (e.code === "KeyP") game.showPreview = !game.showPreview;
+  updateCursor();
 }
 
 function onKeyUp(e) {
   if (KEY_ACTIONS[e.code]) game.input.keys.delete(KEY_ACTIONS[e.code]);
 }
 
-function isOnResetButton(p) {
-  const b = RESET_BUTTON;
-  return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+function isInRect(p, r) {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+// Which on-canvas button (if any) is under the pointer.
+function uiTargetAt(game, p) {
+  if (isInRect(p, TAMPER_BUTTON)) return "tamper";
+  if (isInRect(p, RESET_BUTTON)) return "reset";
+  if (isInRect(p, MENU_HINT)) return "menu";
+  if (isInRect(p, SONG_BUTTON)) return "song";
+  if (game.state === "WON" && isInRect(p, WIN_CARD)) return "win";
+  return null;
+}
+
+function onUiClick(target) {
+  if (target === "tamper") toggleTamper(game);
+  else if (target === "song") toggleSong(game);
+  else if (target === "menu") openMenu();
+  else game = resetGame(game); // the reset button or the win card
+}
+
+function toggleTamper(game) {
+  tamperRelease(game, { vx: 0, vy: 0 });
+  game.input.tamperMode = !game.input.tamperMode;
+}
+
+function updateCursor() {
+  const input = game.input;
+  game.view.canvas.style.cursor = input.hover ? "pointer" : input.tamperMode ? "none" : "crosshair";
+}
+
+function onPointerMove(canvas, e) {
+  if (game.paused) return;
+  const p = toWorld(canvas, e);
+  game.input.pointer = p;
+  trackPointer(game.input, p, e.timeStamp);
+  game.input.hover = game.grab ? null : uiTargetAt(game, p);
+  updateCursor();
+  if (!game.input.tamperMode && !game.input.hover) aimAtPoint(game.cannon, p.x, p.y);
+}
+
+function onPointerDown(canvas, e) {
+  if (e.button !== 0 || game.paused) return;
+  ensureAudio();
+  const p = toWorld(canvas, e);
+  game.input.pointer = p;
+  game.input.trail = [];
+  trackPointer(game.input, p, e.timeStamp);
+  const ui = uiTargetAt(game, p);
+  if (ui) {
+    onUiClick(ui);
+    game.input.hover = game.paused ? null : uiTargetAt(game, p);
+    updateCursor();
+    return;
+  }
+  if (game.input.tamperMode) {
+    if (tamperGrab(game, p)) canvas.setPointerCapture(e.pointerId);
+    return;
+  }
+  aimAtPoint(game.cannon, p.x, p.y);
+  fire(game);
 }
 
 function installInput(canvas) {
-  canvas.addEventListener("pointermove", (e) => {
-    if (game.paused) return;
-    const p = toWorld(canvas, e);
-    game.input.hoverReset = isOnResetButton(p);
-    canvas.style.cursor = game.input.hoverReset ? "pointer" : "crosshair";
-    if (!game.input.hoverReset) aimAtPoint(game.cannon, p.x, p.y);
-  });
-  canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || game.paused) return;
-    ensureAudio();
-    const p = toWorld(canvas, e);
-    if (isOnResetButton(p)) {
-      game = resetGame(game);
-      return;
-    }
-    aimAtPoint(game.cannon, p.x, p.y);
-    fire(game);
+  canvas.addEventListener("pointermove", (e) => onPointerMove(canvas, e));
+  canvas.addEventListener("pointerdown", (e) => onPointerDown(canvas, e));
+  const release = (e) => tamperRelease(game, pointerVelocity(game.input, e.timeStamp));
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+  canvas.addEventListener("pointerleave", () => {
+    if (game.grab) return; // pointer capture keeps the drag alive outside the canvas
+    game.input.pointer = null;
+    game.input.hover = null;
   });
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", () => game.input.keys.clear());
+  // A hidden tab stops the frame loop, which is what normally turns the whoosh off; silence it
+  // here instead. The loop starts it again on return if the ball is still flying.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && game.audio && game.audio.whizz) stopWhizz(game.audio);
+  });
 }
 
 // ===== MENU =====
-// Esc pauses: the simulation and sound stop, and the cannon ignores the mouse and keys.
+// Esc pauses: the simulation stops, the song drops to a murmur, and the cannon ignores the
+// mouse and keys.
 
 function openMenu() {
   game.paused = true;
   game.input.keys.clear();
-  game.input.hoverReset = false;
-  if (game.audio) game.audio.ctx.suspend();
+  game.input.hover = null;
+  tamperRelease(game, { vx: 0, vy: 0 });
   showMenuView("main");
   document.getElementById("menu").hidden = false;
   document.querySelector('#menu [data-action="resume"]').focus();
@@ -1645,7 +2176,6 @@ function openMenu() {
 function closeMenu() {
   document.getElementById("menu").hidden = true;
   game.paused = false;
-  if (game.audio) game.audio.ctx.resume();
   document.activeElement.blur();
 }
 
@@ -1660,6 +2190,8 @@ function showMenuView(name) {
   }
   if (name === "records") renderRecords(game.session.records);
   document.getElementById("sound-state").textContent = game.audio && !game.audio.enabled ? "Off" : "On";
+  document.getElementById("song-state").textContent = game.session.songOn ? "On" : "Off";
+  document.getElementById("tamper-state").textContent = game.input.tamperMode ? "On" : "Off";
   const first = document.querySelector(`#menu [data-view="${name}"] button`);
   first.focus();
 }
@@ -1671,7 +2203,8 @@ function renderRecords(records) {
   for (const r of records) {
     const row = document.createElement("tr");
     if (records.length > 1 && r.time === best) row.className = "best";
-    for (const text of [`#${r.round}${row.className ? " ★" : ""}`, formatTime(r.time), String(r.shots)]) {
+    const label = `#${r.round}${row.className ? " ★" : ""}${r.tampered ? " ✋" : ""}`;
+    for (const text of [PLAYER_NAME, label, formatTime(r.time), String(r.shots)]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.appendChild(cell);
@@ -1680,20 +2213,63 @@ function renderRecords(records) {
   }
   document.getElementById("records-table").hidden = records.length === 0;
   document.getElementById("records-empty").hidden = records.length > 0;
+  document.getElementById("records-legend").hidden = !records.some((r) => r.tampered);
 }
 
 function onMenuAction(action) {
   if (action === "resume") closeMenu();
   else if (action === "records") showMenuView("records");
+  else if (action === "controls") showMenuView("controls");
   else if (action === "back") showMenuView("main");
   else if (action === "sound") {
     setSoundEnabled(game.audio, !game.audio.enabled);
     showMenuView("main");
     document.querySelector('#menu [data-action="sound"]').focus();
+  } else if (action === "song") {
+    toggleSong(game);
+    showMenuView("main");
+    document.querySelector('#menu [data-action="song"]').focus();
+  } else if (action === "tamper") {
+    toggleTamper(game);
+    showMenuView("main");
+    document.querySelector('#menu [data-action="tamper"]').focus();
   } else if (action === "reset") {
     closeMenu();
     game = resetGame(game);
   }
+  updateCursor();
+}
+
+// First load: ask their name, then call them BOZO anyway.
+function isWelcomeOpen() {
+  return !document.getElementById("welcome").hidden;
+}
+
+function openWelcome() {
+  game.paused = true;
+  document.getElementById("welcome").hidden = false;
+  document.getElementById("player-name").focus();
+}
+
+function closeWelcome() {
+  if (!isWelcomeOpen()) return;
+  document.getElementById("welcome").hidden = true;
+  game.paused = false;
+  document.activeElement.blur();
+}
+
+function installWelcome() {
+  const welcome = document.getElementById("welcome");
+  document.getElementById("welcome-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    ensureAudio(); // submitting is the first user gesture, so the song can start now
+    welcome.querySelector('[data-step="ask"]').hidden = true;
+    welcome.querySelector('[data-step="welcome"]').hidden = false;
+    setTimeout(closeWelcome, WELCOME_MS);
+  });
+  welcome.addEventListener("click", () => {
+    if (welcome.querySelector('[data-step="welcome"]').hidden === false) closeWelcome();
+  });
 }
 
 function installMenu() {
@@ -1717,7 +2293,10 @@ function frame(now) {
   }
   // Bricks can move every step, so the arc is simply recomputed each frame while aiming.
   if (game.state === "READY" && game.showPreview) game.preview = computePreview(game);
-  if (game.audio) syncWhizz(game.audio, game.projectile);
+  if (game.audio) {
+    syncWhizz(game.audio, game.paused ? null : game.projectile); // the ball is frozen while paused
+    syncSong(game.audio, game.session.songOn, game.paused);
+  }
   render(game);
   requestAnimationFrame(frame);
 }
@@ -1729,6 +2308,11 @@ function testGame(withBuilding = false) {
 
 function runWorld(world, terrain, seconds) {
   for (let t = 0; t < seconds; t += DT) stepWorld(world, terrain, DT);
+}
+
+// At rest on the terrain: touching it and (almost) not moving.
+function isResting(g, body) {
+  return terrainContacts(g.terrain, body).length > 0 && Math.hypot(body.vx, body.vy) < 5;
 }
 
 function check(pass, expected, actual) {
@@ -1818,12 +2402,13 @@ const FLIGHT_TESTS = [
   }],
   ["T14", "Crater under cannon → it falls and rests on solid ground", () => {
     const g = testGame();
-    const y0 = g.cannon.y;
-    addCrater(g.terrain, g.cannon.x, y0 + 10, 40);
-    for (let i = 0; i < 240; i++) update(g, DT);
     const c = g.cannon;
-    const ok = isSolid(g.terrain, c.x, c.y + 1) && c.y > y0 + 10 && c.vy === 0;
-    return check(ok, "resting lower than before", `y ${y0.toFixed(1)} → ${c.y.toFixed(1)}, vy ${c.vy}`);
+    const base0 = cannonBase(c);
+    addCrater(g.terrain, c.x, base0 + 10, 40);
+    for (let i = 0; i < 240; i++) update(g, DT);
+    const ok = isResting(g, c) && cannonBase(c) > base0 + 10;
+    return check(ok, "resting lower than before",
+      `base ${base0.toFixed(1)} → ${cannonBase(c).toFixed(1)}, v (${c.vx.toFixed(2)}, ${c.vy.toFixed(2)})`);
   }],
 ];
 
@@ -1871,11 +2456,12 @@ const BRICK_TESTS = [
     fire(g);
     explode(g, BUILDING_X, GROUND_Y, "ground");
     g.showPreview = false;
+    g.input.tamperMode = true;
     const r = resetGame(g);
     const ok = r.state === "READY" && r.shots === 0 && r.terrain.craters.length === 0 &&
       r.debris.length === 0 && !r.projectile && countStanding(r.world) === r.startBricks &&
-      r.startBricks > 0 && r.showPreview === false && r.input === g.input;
-    return check(ok, "READY, 0 shots, 0 craters, all bricks standing, input kept",
+      r.startBricks > 0 && r.showPreview === false && r.input === g.input && !r.input.tamperMode;
+    return check(ok, "READY, 0 shots, 0 craters, all bricks standing, input kept, Tamper off",
       `${r.state}, ${r.shots} shots, ${r.terrain.craters.length} craters, ` +
       `${countStanding(r.world)}/${r.startBricks} standing`);
   }],
@@ -1915,8 +2501,146 @@ const BRICK_TESTS = [
   }],
 ];
 
+function holdAt(g, x, y, steps) {
+  g.input.pointer = { x, y };
+  for (let i = 0; i < steps; i++) update(g, DT);
+}
+
+const TAMPER_TESTS = [
+  ["T20", "Tamper: carry the cannon up and drop it → it falls and lands on solid ground", () => {
+    const g = testGame();
+    const c = g.cannon;
+    const grabbed = tamperGrab(g, { x: c.x, y: c.y });
+    holdAt(g, 700, 300, 90);
+    const carried = Math.hypot(c.x - 700, c.y - 300) < 2;
+    tamperRelease(g, { vx: 0, vy: 0 });
+    holdAt(g, 700, 300, 240);
+    const landed = !g.grab && isResting(g, c) && cannonBase(c) > 500;
+    return check(grabbed && carried && landed, "grabbed, carried to (700, 300), landed",
+      `grabbed ${grabbed}, carried ${carried}, at (${c.x.toFixed(1)}, ${c.y.toFixed(1)}), vy ${c.vy.toFixed(2)}`);
+  }],
+  ["T21", "Tamper: fling the cannon → it keeps the throw velocity, then lands", () => {
+    const g = testGame();
+    tamperGrab(g, { x: g.cannon.x, y: g.cannon.y });
+    holdAt(g, 500, 200, 90);
+    const x0 = g.cannon.x;
+    tamperRelease(g, { vx: 600, vy: -200 });
+    holdAt(g, 500, 200, 24);
+    const flewX = g.cannon.x - x0;
+    holdAt(g, 500, 200, 480);
+    const ok = flewX > 100 && isResting(g, g.cannon);
+    return check(ok, "moved > 100 right in 0.2 s, then resting",
+      `moved ${flewX.toFixed(1)}, v (${g.cannon.vx.toFixed(2)}, ${g.cannon.vy.toFixed(2)})`);
+  }],
+  ["T22", "Tamper: grab ≤ 3 bricks, lift them, let go → they fall", () => {
+    const g = testGame(true);
+    const top = g.world.bricks.reduce((a, b) => (b.y < a.y ? b : a));
+    tamperGrab(g, { x: top.x, y: top.y });
+    const held = g.grab ? g.grab.items.map((h) => h.b) : [];
+    const y0 = held.map((b) => b.y);
+    holdAt(g, top.x, top.y - 150, 60);
+    const lifted = held.every((b, i) => b.y < y0[i] - 100);
+    const y1 = held.map((b) => b.y);
+    tamperRelease(g, { vx: 0, vy: 0 });
+    holdAt(g, top.x, top.y - 150, 30);
+    const fell = held.every((b, i) => b.y > y1[i] + 20);
+    const ok = held.length >= 1 && held.length <= MAX_GRAB && lifted && fell;
+    return check(ok, `1–${MAX_GRAB} held, lifted > 100, fell > 20`, `${held.length} held, lifted ${lifted}, fell ${fell}`);
+  }],
+  ["T23", "Tamper: a flung brick carries the drag velocity", () => {
+    const g = testGame(true);
+    const top = g.world.bricks.reduce((a, b) => (b.y < a.y ? b : a));
+    tamperGrab(g, { x: top.x, y: top.y });
+    holdAt(g, top.x - 300, top.y - 200, 60);
+    tamperRelease(g, { vx: -800, vy: -300 });
+    update(g, DT);
+    return check(top.vx < -700 && top.vy < -250, "vx ≈ -800, vy ≈ -300", `vx ${top.vx.toFixed(0)}, vy ${top.vy.toFixed(0)}`);
+  }],
+  ["T24", "Tamper: clicking the ground digs a standard crater; air does nothing", () => {
+    const g = testGame();
+    const air = tamperGrab(g, { x: 800, y: 200 });
+    const dig = tamperGrab(g, { x: 800, y: surfaceY(g.terrain, 800) + 10 });
+    const c = g.terrain.craters;
+    const ok = !air && !dig && c.length === 1 && c[0].r === CRATER_R && !isSolid(g.terrain, 800, c[0].cy);
+    return check(ok, `1 crater of r ${CRATER_R}`, `${c.length} crater(s)${c[0] ? ` r ${c[0].r}` : ""}`);
+  }],
+  ["T25", "Throw velocity from a quick drag; zero if the pointer stopped first", () => {
+    const input = { trail: [] };
+    trackPointer(input, { x: 100, y: 500 }, 1000);
+    trackPointer(input, { x: 150, y: 480 }, 1050);
+    const moving = pointerVelocity(input, 1050);
+    const stopped = pointerVelocity(input, 1300);
+    const ok = Math.abs(moving.vx - 1000) < 1 && Math.abs(moving.vy + 400) < 1 && stopped.vx === 0 && stopped.vy === 0;
+    return check(ok, "(1000, -400) then (0, 0)", `(${moving.vx}, ${moving.vy}) then (${stopped.vx}, ${stopped.vy})`);
+  }],
+  ["T26", "Canvas buttons: gold top-left, Esc hint top-right, win card only after a win", () => {
+    const g = testGame();
+    const at = (r) => uiTargetAt(g, { x: r.x + r.w / 2, y: r.y + r.h / 2 });
+    const before = at(WIN_CARD);
+    g.state = "WON";
+    const ok = at(TAMPER_BUTTON) === "tamper" && at(MENU_HINT) === "menu" && at(RESET_BUTTON) === "reset" &&
+      before === null && at(WIN_CARD) === "win" && TAMPER_BUTTON.x < W / 4 && MENU_HINT.x > (W * 3) / 4;
+    return check(ok, "tamper, menu, reset, win (only when WON)",
+      `${at(TAMPER_BUTTON)}, ${at(MENU_HINT)}, ${at(RESET_BUTTON)}, win before ${before} after ${at(WIN_CARD)}`);
+  }],
+  ["T27", "Tamper: the carried cannon shoves bricks and can't pass through them", () => {
+    const g = testGame(true);
+    const c = g.cannon;
+    const wall = g.world.bricks.reduce((a, b) => (b.x < a.x ? b : a)).x - BRICK_W / 2;
+    tamperGrab(g, { x: c.x, y: c.y });
+    holdAt(g, wall - 100, 350, 120); // over the hill first
+    holdAt(g, wall - 100, GROUND_Y - CANNON_HH - 2, 120);
+    holdAt(g, wall + 60, GROUND_Y - CANNON_HH - 2, 240); // then shove sideways into the building
+    const moved = g.world.bricks.filter((b) => Math.hypot(b.x - b.homeX, b.y - b.homeY) > 3).length;
+    const overlap = g.world.bricks.some((b) => collideBoxes(c, b).some((k) => k.separation < -4));
+    return check(moved > 0 && !overlap, "some bricks pushed, no deep overlap",
+      `${moved} bricks moved, overlap ${overlap}, cannon x ${c.x.toFixed(1)} (hand at ${(wall + 60).toFixed(1)})`);
+  }],
+  ["T28", "A brick dropped on the cannon lands on top of it", () => {
+    const g = testGame();
+    const c = g.cannon;
+    runWorld(g.world, g.terrain, 0.3);
+    const b = addBrick(g.world, c.x, c.y - 120, BRICK_COLORS[0]);
+    runWorld(g.world, g.terrain, 1.5);
+    const gap = (c.y - c.hh) - (b.y + b.hh);
+    return check(Math.abs(gap) < 1.5 && Math.abs(b.x - c.x) < c.hw, "brick resting on the cannon (gap ≈ 0)",
+      `gap ${gap.toFixed(2)}, brick x offset ${(b.x - c.x).toFixed(1)}`);
+  }],
+  ["T29", "Song: on by default, F-button in the top-right, and its state survives a reset", () => {
+    const g = testGame();
+    const byDefault = g.session.songOn;
+    const button = uiTargetAt(g, { x: SONG_BUTTON.x + SONG_BUTTON.w / 2, y: SONG_BUTTON.y + SONG_BUTTON.h / 2 });
+    toggleSong(g);
+    const offAfterReset = !resetGame(g).session.songOn;
+    const ok = byDefault && button === "song" && offAfterReset && SONG_BUTTON.x > W / 2;
+    return check(ok, "on by default, button 'song', still off after reset",
+      `${byDefault}, ${button}, off after reset ${offAfterReset}`);
+  }],
+  ["T30", "Song loop: 8 bars of 8 steps, a chord per bar, notes in a friendly range", () => {
+    const notes = SONG_MELODY.flat().filter((n) => n !== REST);
+    const ok = SONG_MELODY.length === 8 && SONG_MELODY.every((bar) => bar.length === 8) &&
+      SONG_CHORDS.length === 8 && Math.min(...notes) >= 60 && Math.max(...notes) <= 84;
+    return check(ok, "8×8 steps, 8 chords, melody C4–C6",
+      `${SONG_MELODY.length} bars, ${SONG_CHORDS.length} chords, range ${Math.min(...notes)}–${Math.max(...notes)}`);
+  }],
+  ["T31", "Keys: W/S and ↑/↓ change power, A/D and ←/→ angle; F (song) is not an aim key", () => {
+    const k = KEY_ACTIONS;
+    const ok = k.KeyS === "powerDown" && k.ArrowDown === "powerDown" && k.KeyW === "powerUp" &&
+      k.KeyA === "angleDown" && k.KeyD === "angleUp" && !k.KeyF;
+    return check(ok, "S → powerDown, F unbound for aiming", `S → ${k.KeyS}, F → ${k.KeyF}`);
+  }],
+  ["T32", "Win taunt matches the shot count", () => {
+    const cases = [[0, "DID YOU CHEAT BOZO?"], [1, "DID YOU CHEAT BOZO?"], [2, "YOU FOUND THE STRAT BOZO!"],
+      [3, "GOOD JOB BOZO!"], [4, "GOOD JOB BOZO!"], [5, "OK WORK BOZO!"], [6, "OK WORK BOZO!"],
+      [7, "COULD BE BETTER BOZO!"], [8, "COULD BE BETTER BOZO!"], [9, "UNINSTALL ALREADY BOZO!"],
+      [20, "UNINSTALL ALREADY BOZO!"]];
+    const wrong = cases.filter(([n, text]) => winTaunt(n) !== text).map(([n]) => `${n} → ${winTaunt(n)}`);
+    return check(wrong.length === 0, "all 11 cases match", wrong.join("; ") || "all match");
+  }],
+];
+
 function runSelfTests() {
-  return [...TERRAIN_TESTS, ...FLIGHT_TESTS, ...BRICK_TESTS].map(([id, name, fn]) => {
+  return [...TERRAIN_TESTS, ...FLIGHT_TESTS, ...BRICK_TESTS, ...TAMPER_TESTS].map(([id, name, fn]) => {
     let r;
     try {
       r = fn();
@@ -1956,6 +2680,8 @@ function boot() {
   window.addEventListener("resize", () => resizeCanvas(game.view));
   installInput(canvas);
   installMenu();
+  installWelcome();
+  openWelcome();
   if (location.hash === "#test") showTestResults(runSelfTests());
   requestAnimationFrame((now) => {
     game.loop.last = now;

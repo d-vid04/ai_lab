@@ -1,5 +1,90 @@
 # CHANGELOG
 
+## 0.12.1 — 2026-09-22
+- Fix: the in-flight whoosh kept playing after switching tabs while the ball was in the air
+  (a hidden tab stops the frame loop that normally silences it). It now stops when the tab is
+  hidden and resumes on return if the ball is still flying.
+
+## 0.12.0 — 2026-09-22
+- On load, a prompt asks for the player's name (the game is paused and keys go to the text
+  box). Submitting shows **WELCOME BOZO!** for 1.8 s (click to skip). Whatever the name, the
+  game calls the player BOZO (`PLAYER_NAME`).
+- Past records has a new **Player** column (always BOZO) before Round.
+- The win card shows a taunt above "Building down in N shots", based on N: ≤1 "DID YOU CHEAT
+  BOZO?", 2 "YOU FOUND THE STRAT BOZO!", ≤4 "GOOD JOB BOZO!", ≤6 "OK WORK BOZO!", ≤8 "COULD BE
+  BETTER BOZO!", otherwise "UNINSTALL ALREADY BOZO!". The card is taller to fit it.
+- The Esc menu no longer freezes audio: the song ducks to 20 % (`SONG_MENU_DUCK`) and fades back
+  when the menu closes. The in-flight whoosh goes quiet while the ball is frozen.
+- The test panel now sits above the overlays. Test T32 covers the taunt thresholds.
+
+## 0.11.1 — 2026-09-22
+- The song toggle moves from S to **F** (pill key cap and menu row updated). **S lowers power
+  again**, as in 0.10.
+- Song volume up a little: `SONG_VOLUME` 0.22 → 0.32 (about +3 dB), still under the effects.
+- New **⌨ Controls** page in the Esc menu listing every control: aim, angle, power, fire,
+  Tamper (grab, throw, dig), aim preview, song, reset, pause.
+- Test T31: the key bindings (S lowers power, F isn't an aim key).
+
+## 0.11.0 — 2026-09-22
+- Background song, synthesised in the file and looping: a bouncy 8-bar tune in C at 132 BPM,
+  with a marimba melody over an oom-pah bass, offbeat chord stabs, a soft kick and a woodblock
+  tick. Every other pass the melody drops an octave. It plays quietly (`SONG_VOLUME` 0.22,
+  under the effects), is scheduled on the audio clock, fades in and out, and pauses with the
+  Esc menu.
+- **♪ SONG · ON/OFF** pill with an **S** key cap under ESC MENU, plus a "♪ Song" row (On/Off, S)
+  in the Esc menu. S toggles the song everywhere, including while the menu is open.
+- The song is on by default (it starts on the first click or key press, since browsers block
+  audio until then). Its state lives in the session, so a reset never changes it.
+- **S no longer lowers power**; use ↓. The menu's "Sound" row is renamed "All sound" (it mutes
+  effects and song together).
+- Tests T29 (default on, button placement, state survives resets) and T30 (song data shape).
+
+## 0.10.1 — 2026-09-22
+- Redid the second half of the dig sound. The bright high-pass "soil pattering" bursts
+  sounded like crumpling paper. After the opening scrape and thump, the loosened clump now
+  lands with a dull low thud and settles in four fading, muffled bumps (low-passed below
+  ~700 Hz).
+
+## 0.10.0 — 2026-09-22
+- Renamed "Tamper-Tantrum Mode" to **Tamper** everywhere.
+- **T** now toggles Tamper. The aim-preview toggle moves from T to **P**; this departs from
+  spec §6.3 because the human asked for T.
+- The Tamper, Reset and Menu pills now show key caps (**T**, **R**, **ESC**). The Esc menu has
+  a "✋ Tamper mode" row with its On/Off state and the T key; T also works while the menu is open.
+- Resetting a round (R, the button, the menu or the win card) always turns Tamper off.
+- **The cannon collides with bricks.** It is now a rigid body in the brick physics: a 40×26 box
+  that never rotates and weighs about six bricks. It shoves bricks when carried, can't pass
+  through them, bricks can land on it, and it lands on them. Carrying it uses the same spring
+  pull as bricks; the old hand-rolled cannon motion (`updateCannon`, `liftOutOfGround`) was
+  removed.
+- Digging in Tamper plays its own sound (dirt scrapes, a soft thump, soil pattering down) in
+  place of the cannonball-impact blast. The crater and brick physics are unchanged: `blastAt`
+  no longer plays sound, and each caller picks its own.
+- Tests: T14/T20/T21 updated for the physics cannon, T17 checks Tamper is off after a reset,
+  T27 (the carried cannon shoves bricks without passing through), T28 (a brick lands on the
+  cannon).
+
+## 0.9.0 — 2026-09-22
+- The win card is clickable: clicking it starts a new round (R still works).
+- New **ESC MENU** pill in the top-right, under Reset, styled like the other pills. It shows that
+  Esc opens the pause menu, and clicking it opens the menu too.
+- **Tamper-Tantrum Mode**: a gold toggle in the top-left. While it's on:
+  - The cannon stops following the mouse. Keyboard aiming and Space still work.
+  - The cursor becomes a cartoon hand with a dashed reach ring. Bricks in reach are outlined.
+  - Drag the cannon, or up to 3 bricks within reach, anywhere. Held bricks are pulled toward the
+    hand through the rigid-body solver, so they still shove other bricks. The cannon is never
+    placed inside the ground.
+  - On release, gravity takes over. A quick drag throws: the hand's velocity over the last
+    100 ms (capped at 1800 u/s) carries over to the cannon or bricks.
+  - Clicking bare ground digs a hole with exactly the same blast as a cannonball (`blastAt`,
+    now shared by both).
+  - Rounds won after tampering are marked ✋ in Past records.
+- The cannon is now a free ballistic body (x/vx as well as y/vy): it can be thrown, lands on
+  ground, stops at walls and ceilings, and stays inside the world. `updateCannonFall` became
+  `updateCannon`.
+- Self-tests T20–T26: carrying and dropping the cannon, throwing it, grabbing ≤ 3 bricks,
+  throw velocity, digging, the drag-velocity maths, and the canvas button hit areas.
+
 ## 0.8.1 — 2026-09-22
 - Softer in-flight whoosh: about 10 dB quieter (new `WHIZZ_VOLUME`), a broad low filter
   instead of a narrow high one (a rush of air, not a hiss), a lower pitch range
