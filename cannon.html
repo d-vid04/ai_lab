@@ -155,6 +155,7 @@
             <tr><td>Fire mode</td><td><kbd>1</kbd>–<kbd>6</kbd> or the bar at the top</td></tr>
             <tr><td>· unlocks</td><td>Rapid 1 win · Burst 2 · Bomb 4 · Spam &amp; Full auto 10</td></tr>
             <tr><td>· full auto</td><td>Hold the mouse or <kbd>Space</kbd></td></tr>
+            <tr><td>Goal</td><td>Once it settles, no upright stack taller than 4 bricks</td></tr>
           </tbody>
         </table>
       </div>
@@ -178,7 +179,7 @@
 "use strict";
 
 // ===== CONFIG =====
-const VERSION = "0.14.0";
+const VERSION = "0.15.2";
 
 const W = 1600;
 const H = 900;
@@ -199,7 +200,19 @@ const AIM_RANGE = 450;
 const PREVIEW_TIME = 0.9;
 const BRICK_W = 22;
 const BRICK_H = 13;
-const WIN_FRACTION = 0.10;
+// The building is down once no intact stack (upright bricks sitting squarely on each other) is
+// taller than DOWN_STACK bricks, and that has held for DOWN_HOLD seconds. Replaces spec §8.5's
+// "≤ 10 % of bricks in place", which counted a lone untouched tower as a win and two flat rows
+// as a loss.
+const DOWN_STACK = 4;
+const DOWN_HOLD = 0.5;            // s the building must stay down, so a wobbling wall can't win
+const MOVING_SPEED = 30;          // u/s: a brick this fast might still be part of a falling piece
+const UPRIGHT_SIN = 0.45;         // |sin(tilt)| below this (about 27°): upright, or a wall only leaning
+const CAP_COLS = [5, 6];          // two extra bricks on top of the dome's centre columns
+const DIRT_COLORS = ["#4d8c7d", "#3f7a6c", "#356b5e"];
+const DIRT_TOP_COLOR = "#72b8a3"; // chunks torn from just under the surface
+const DIRT_INK = "#23473f";
+const DIRT_SAMPLES = 32;          // points tested per crater (× scale); each solid one flies off
 
 const CANNON_X = 120;
 const CANNON_PIVOT_H = 24;
@@ -236,10 +249,12 @@ const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
 const DEBRIS_LIFE = 1.5;
 const CLOUD_SPEED = 6;
 
+const RAPID_COOLDOWN = 0.3;       // s: Rapid can fire again this soon, even with balls still flying
+
 // Fire modes, unlocked by buildings knocked down this session. Keys 1–6 or the top-centre bar.
 const FIRE_MODES = [
   { id: "single", name: "SINGLE", unlockAt: 0, reload: RELOAD_TIME },
-  { id: "rapid", name: "RAPID", unlockAt: 1, reload: RELOAD_TIME / 2 },
+  { id: "rapid", name: "RAPID", unlockAt: 1, reload: 0, cooldown: RAPID_COOLDOWN },
   { id: "burst", name: "BURST", unlockAt: 2, reload: RELOAD_TIME, burst: 3 },
   { id: "bomb", name: "BOMB", unlockAt: 4, reload: RELOAD_TIME, bomb: true },
   { id: "spam", name: "SPAM", unlockAt: 10, reload: 0, bomb: true, free: true },
@@ -554,6 +569,10 @@ function createBuilding(world, rng) {
       addBrick(world, left + (i + 0.5) * BRICK_W, GROUND_Y - (r + 0.5) * BRICK_H, color);
     }
   }
+  for (const i of CAP_COLS) {
+    const color = BRICK_COLORS[Math.floor(rng() * BRICK_COLORS.length)];
+    addBrick(world, left + (i + 0.5) * BRICK_W, GROUND_Y - (domeRows(i) + 0.5) * BRICK_H, color);
+  }
 }
 
 // "Standing" = still roughly where it was built and not tipped over.
@@ -565,6 +584,46 @@ function countStanding(world) {
   let n = 0;
   for (const b of world.bricks) if (isStanding(b)) n++;
   return n;
+}
+
+function isUpright(b) {
+  return Math.abs(Math.sin(b.a)) < UPRIGHT_SIN;
+}
+
+function isMoving(b) {
+  return Math.hypot(b.vx, b.vy) > MOVING_SPEED;
+}
+
+// `top` rests squarely on `below`: touching and overlapping by at least 40 % of a brick.
+function sitsOn(top, below) {
+  const gap = (below.y - below.hh) - (top.y + top.hh);
+  const overlap = Math.min(top.x + top.hw, below.x + below.hw) - Math.max(top.x - top.hw, below.x - below.hw);
+  return Math.abs(gap) < 3 && overlap > 0.4 * BRICK_W;
+}
+
+function homeKey(x, y) {
+  return `${Math.round(x)},${Math.round(y)}`;
+}
+
+// Height in bricks of the tallest intact piece of the original building: a brick extends a
+// stack only if it is upright and still sits squarely on the brick that was built directly
+// under it. A shoved but intact wall still counts in full; rubble that happens to land flat on
+// other rubble doesn't, because those bricks were never neighbours. A piece that is still
+// moving (toppling or falling) keeps counting whatever its tilt until it lands, so a win never
+// fires mid-collapse and then gets undone when the piece lands upright.
+function tallestStack(world) {
+  const byHome = new Map(world.bricks.map((b) => [homeKey(b.homeX, b.homeY), b]));
+  const mightStand = (b) => isUpright(b) || isMoving(b);
+  const upright = world.bricks.filter(mightStand).sort((a, b) => b.homeY - a.homeY); // bottom row first
+  const level = new Map();
+  let tallest = 0;
+  for (const b of upright) {
+    const below = byHome.get(homeKey(b.homeX, b.homeY + BRICK_H));
+    const lv = below && level.has(below) && sitsOn(b, below) ? level.get(below) + 1 : 1;
+    level.set(b, lv);
+    tallest = Math.max(tallest, lv);
+  }
+  return tallest;
 }
 
 function removeLostBricks(world) {
@@ -990,6 +1049,7 @@ function updateProjectiles(game, dt) {
 // Crater, destroyed bricks and flung bricks. Shared by cannonball hits, bombs (scale
 // BOMB_SCALE) and digging in Tamper mode; each caller plays its own sound.
 function blastAt(game, x, y, scale) {
+  spawnDirt(game, x, y, CRATER_R * scale, scale);
   addCrater(game.terrain, x, y, CRATER_R * scale);
   destroyBricksNear(game, x, y, BLAST_R * scale);
   blastBricks(game.world, x, y, game.rng, BLAST_PUSH_R * scale, BLAST_PUSH_SPEED * Math.sqrt(scale));
@@ -1012,7 +1072,9 @@ function destroyBricksNear(game, x, y, radius) {
   const survivors = [];
   for (const b of game.world.bricks) {
     if (Math.hypot(b.x - x, b.y - y) < radius) {
-      for (let i = 0; i < 3; i++) game.debris.push(createDebris(b, x, y, game.rng));
+      for (let i = 0; i < 3; i++) {
+        game.debris.push(createChunk(b.x, b.y, b.color, COLORS.brickInk, x, y, game.rng, 80, 260, 4));
+      }
     } else {
       survivors.push(b);
     }
@@ -1021,21 +1083,38 @@ function destroyBricksNear(game, x, y, radius) {
 }
 
 // ===== PARTICLES =====
-function createDebris(brick, bx, by, rng) {
-  const d = Math.hypot(brick.x - bx, brick.y - by);
-  const angle = d > 0.001 ? Math.atan2(brick.y - by, brick.x - bx) : rng() * Math.PI * 2;
-  const speed = 80 + rng() * 180;
+// A small square flung away from (fromX, fromY): brick shards and clods of dirt alike.
+function createChunk(x, y, color, ink, fromX, fromY, rng, minSpeed, maxSpeed, minSize) {
+  const d = Math.hypot(x - fromX, y - fromY);
+  const angle = d > 0.001 ? Math.atan2(y - fromY, x - fromX) : rng() * Math.PI * 2;
+  const speed = minSpeed + rng() * (maxSpeed - minSpeed);
   return {
-    x: brick.x,
-    y: brick.y,
+    x, y,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed - (60 + rng() * 120),
-    size: 4 + rng() * 2,
+    size: minSize + rng() * 3,
     spin: (rng() - 0.5) * 12,
     a: rng() * Math.PI,
-    color: brick.color,
+    color, ink,
     age: 0,
   };
+}
+
+// The ground breaking: before a crater is cut, sample points inside it; every one that is still
+// solid ground becomes a clod of dirt blown out of the hole. Clods are thrown away from a point
+// below the crater, so they spray up and out instead of into the bowl. Air blasts throw no dirt.
+function spawnDirt(game, x, y, r, scale) {
+  const n = Math.round(DIRT_SAMPLES * scale);
+  for (let i = 0; i < n; i++) {
+    const a = game.rng() * Math.PI * 2;
+    const d = Math.sqrt(game.rng()) * r;
+    const px = x + Math.cos(a) * d;
+    const py = y + Math.sin(a) * d;
+    if (!isSolid(game.terrain, px, py)) continue;
+    const nearTop = py - surfaceY(game.terrain, px) < 14;
+    const color = nearTop ? DIRT_TOP_COLOR : DIRT_COLORS[Math.floor(game.rng() * DIRT_COLORS.length)];
+    game.debris.push(createChunk(px, py, color, DIRT_INK, x, y + r * 1.2, game.rng, 180, 420, 4));
+  }
 }
 
 function updateBlasts(game, dt) {
@@ -1456,6 +1535,8 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
     burstTimer: 0,
     burstBomb: false,
     autoTimer: 0,
+    sinceShot: Infinity, // no shot yet, so Rapid's first shot isn't held back
+    downFor: 0,
     bombTimes: [],
     uncleSam: false,
     debris: [],
@@ -1505,8 +1586,10 @@ function setState(game, state) {
   game.stateTime = 0;
 }
 
+// No waiting for the rubble to stop: moving rubble can't form an upright stack, and a toppling
+// tower drops out as soon as it tilts, so the stack test already ignores what's still falling.
 function isBuildingDown(game) {
-  return game.startBricks > 0 && countStanding(game.world) <= WIN_FRACTION * game.startBricks;
+  return game.startBricks > 0 && tallestStack(game.world) <= DOWN_STACK;
 }
 
 function currentMode(game) {
@@ -1530,10 +1613,14 @@ function selectFireMode(game, index) {
   game.session.fireMode = index;
 }
 
-// Spam and full auto ignore the reload; everything else waits for READY.
+// Spam and full auto ignore the reload; Rapid only waits out its short cooldown; everything
+// else waits for READY.
 function canFire(game) {
   if (game.state === "WON") return false;
-  return currentMode(game).free || game.state === "READY";
+  const mode = currentMode(game);
+  if (mode.free) return true;
+  if (mode.cooldown) return game.sinceShot >= mode.cooldown;
+  return game.state === "READY";
 }
 
 // One ball (or bomb) out of the muzzle; every ball counts as a shot.
@@ -1562,6 +1649,7 @@ function fire(game) {
   game.burstBomb = Boolean(mode.bomb);
   game.burstTimer = BURST_GAP;
   game.autoTimer = AUTO_INTERVAL;
+  game.sinceShot = 0;
   setState(game, "IN_FLIGHT");
 }
 
@@ -1584,13 +1672,17 @@ function updateTrigger(game, dt) {
 function updateState(game, dt) {
   game.stateTime += dt;
   if (game.state === "WON") return;
+  // Checked in every state, so a win shows as soon as the building falls, not after the reload.
+  game.downFor = isBuildingDown(game) ? game.downFor + dt : 0;
+  if (game.downFor >= DOWN_HOLD) {
+    winRound(game);
+    return;
+  }
   const reload = currentMode(game).reload;
   if (game.state === "IN_FLIGHT" && !game.projectiles.length && !game.burstLeft) {
     setState(game, reload > 0 ? "RELOADING" : "READY");
   }
   if (game.state === "RELOADING" && game.stateTime >= reload) setState(game, "READY");
-  // Free-fire modes never pause between shots, so they can win mid-barrage.
-  if ((game.state === "READY" || currentMode(game).free) && isBuildingDown(game)) winRound(game);
 }
 
 // The clock runs from the first shot, so time spent lining up that shot is free.
@@ -1618,6 +1710,7 @@ function updateClouds(clouds, dt) {
 
 function update(game, dt) {
   if (game.shots > 0 && game.state !== "WON") game.elapsed += dt;
+  game.sinceShot += dt;
   updateClouds(game.clouds, dt);
   applyKeyAim(game, dt);
   applyGrab(game, dt);
@@ -1944,7 +2037,7 @@ function drawDebris(ctx, debris) {
     ctx.rotate(p.a);
     ctx.fillStyle = p.color;
     ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
-    ctx.strokeStyle = COLORS.brickInk;
+    ctx.strokeStyle = p.ink;
     ctx.lineWidth = 1;
     ctx.strokeRect(-p.size / 2, -p.size / 2, p.size, p.size);
     ctx.restore();
@@ -2127,7 +2220,8 @@ function fireBarCaption(game) {
   if (!isModeUnlocked(game, index)) {
     return `🔒 ${mode.name} · WIN ${mode.unlockAt} ROUND${mode.unlockAt === 1 ? "" : "S"} TO UNLOCK (${game.session.records.length}/${mode.unlockAt})`;
   }
-  const how = mode.auto ? " · HOLD TO FIRE" : mode.free ? " · EVERY CLICK FIRES" : "";
+  const how = mode.auto ? " · HOLD TO FIRE" : mode.free ? " · EVERY CLICK FIRES"
+    : mode.cooldown ? ` · EVERY ${mode.cooldown} S` : "";
   return `${hovered ? `PRESS ${index + 1} · ` : "FIRE MODE: "}${mode.name}${how}`;
 }
 
@@ -2251,7 +2345,7 @@ function drawHud(ctx, game) {
     `Power ${Math.round(c.power * 100)}%`,
     `Shots ${game.shots}`,
     `Time ${formatTime(game.elapsed)}`,
-    `Bricks ${countStanding(game.world)}/${game.startBricks}`,
+    `Tallest stack ${tallestStack(game.world)} (down at ${DOWN_STACK})`,
     `v${VERSION}`,
   ];
   ctx.font = `600 16px ${FONT}`;
@@ -2869,7 +2963,7 @@ const BRICK_TESTS = [
     const g = testGame(true);
     fire(g);
     for (let i = 0; i < 240; i++) update(g, DT);
-    g.world.bricks = g.world.bricks.slice(0, 5); // building down
+    g.world.bricks = g.world.bricks.slice(0, 3); // building down: one 3-brick stack left
     for (let i = 0; i < 240 && g.state !== "WON"; i++) update(g, DT);
     const rec = g.session.records[0];
     const r = resetGame(g);
@@ -3063,16 +3157,20 @@ const FIRE_MODE_TESTS = [
     return check(ok, "thresholds 0,1,2,4,10,10; bomb refused at 3 wins, burst accepted",
       `at 4 wins ${unlockedAt(4).join()}, locked stays ${lockedStays}, picked ${three.session.fireMode}`);
   }],
-  ["T34", "Rapid fire reloads twice as fast", () => {
+  ["T34", "Rapid fires again after 0.3 s, even with the first ball still in the air", () => {
     const g = withWins(testGame(), 1);
     selectFireMode(g, 1);
-    setAim(g.cannon, 25, 0.55);
+    setAim(g.cannon, 40, 0.9);
     fire(g);
-    flyUntilSettled(g, 2000);
+    fire(g); // too soon: ignored
+    const early = g.shots;
     let steps = 0;
-    while (g.state === "RELOADING" && steps < 500) { update(g, DT); steps += 1; }
-    const seconds = steps * DT;
-    return check(Math.abs(seconds - RELOAD_TIME / 2) < 0.05, `≈ ${RELOAD_TIME / 2} s reload`, `${seconds.toFixed(3)} s`);
+    while (!canFire(g) && steps < 500) { update(g, DT); steps += 1; }
+    const airborne = g.projectiles.length;
+    fire(g);
+    const ok = early === 1 && Math.abs(steps * DT - RAPID_COOLDOWN) < 0.02 && airborne === 1 && g.shots === 2;
+    return check(ok, `2nd shot after ≈ ${RAPID_COOLDOWN} s with the 1st still flying`,
+      `ready after ${(steps * DT).toFixed(3)} s, ${airborne} airborne then, ${g.shots} shots`);
   }],
   ["T35", "Burst fires three balls in a row, then reloads normally", () => {
     const g = withWins(testGame(), 2);
@@ -3159,6 +3257,56 @@ const FIRE_MODE_TESTS = [
       fastest.rows[0].r.round === 8 && fastest.extra === null;
     return check(ok, "3,4,6,8,9 + round 7 as #7; a new best is #1 with no extra row",
       `${slowest.rows.map((row) => row.r.time).join()}, extra #${slowest.extra && slowest.extra.rank}, new best round ${fastest.rows[0].r.round}`);
+  }],
+  ["T42", "Building-down rule: towers and shoved walls still stand; flat rows and rubble are down", () => {
+    const scenario = (edit, seconds) => {
+      const g = testGame(true);
+      edit(g);
+      for (let i = 0; i < seconds * 120; i++) update(g, DT);
+      return isBuildingDown(g);
+    };
+    const centreX = BUILDING_X - BRICK_W / 2;
+    const tower = scenario((g) => { g.world.bricks = g.world.bricks.filter((b) => Math.abs(b.homeX - centreX) < 1); }, 1);
+    const shoved = scenario((g) => { for (const b of g.world.bricks) b.x += 16; }, 1);
+    const twoRows = scenario((g) => { g.world.bricks = g.world.bricks.filter((b) => b.homeY > GROUND_Y - 2 * BRICK_H); }, 1);
+    const rubble = scenario((g) => {
+      for (const x of [-100, 0, 100]) explode(g, BUILDING_X + x, GROUND_Y - 20, "ground", true);
+    }, 4);
+    const ok = !tower && !shoved && twoRows && rubble;
+    return check(ok, "tower no, shoved no, two rows yes, rubble yes",
+      `tower ${tower}, shoved ${shoved}, two rows ${twoRows}, rubble ${rubble}`);
+  }],
+  ["T43", "The building has two cap bricks: 142 bricks, 15 tall, and it stands", () => {
+    const g = testGame(true);
+    runWorld(g.world, g.terrain, 2);
+    const ok = g.startBricks === 142 && tallestStack(g.world) === 15 && !isBuildingDown(g);
+    return check(ok, "142 bricks, tallest stack 15, not down", `${g.startBricks} bricks, stack ${tallestStack(g.world)}`);
+  }],
+  ["T44", "Ground hits throw dirt clods; blasts in the air don't", () => {
+    const ground = testGame();
+    explode(ground, 800, surfaceY(ground.terrain, 800), "ground");
+    const dirt = ground.debris.filter((p) => p.ink === DIRT_INK).length;
+    const air = testGame();
+    explode(air, 800, 150, "ground");
+    return check(dirt >= 5 && air.debris.length === 0, "≥ 5 clods from the ground, 0 from the air",
+      `${dirt} clods, ${air.debris.length} from the air`);
+  }],
+  ["T45", "The win registers within 2 s of a flattening blast, while rubble still moves", () => {
+    const g = withWins(testGame(true), 4);
+    for (const x of [-100, 0, 100]) explode(g, BUILDING_X + x, GROUND_Y - 20, "ground", true);
+    let steps = 0;
+    while (g.state !== "WON" && steps < 600) { update(g, DT); steps += 1; }
+    const moving = g.world.bricks.filter((b) => b.x > 0 && b.x < W && Math.hypot(b.vx, b.vy) > 30).length;
+    return check(g.state === "WON" && steps * DT < 2 && moving > 0, "WON in < 2 s with rubble still moving",
+      `${g.state} after ${(steps * DT).toFixed(2)} s, ${moving} bricks still moving`);
+  }],
+  ["T46", "A shaken but intact building doesn't count as down", () => {
+    const g = testGame(true);
+    explode(g, BUILDING_X + 200, GROUND_Y - 60, "ground"); // a near miss that rattles the right side
+    let wonEver = false;
+    for (let i = 0; i < 360; i++) { update(g, DT); wonEver = wonEver || g.state === "WON"; }
+    return check(!wonEver && tallestStack(g.world) > DOWN_STACK, "never WON, tall stack remains",
+      `won ${wonEver}, tallest ${tallestStack(g.world)}`);
   }],
 ];
 

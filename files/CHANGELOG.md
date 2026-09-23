@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## 0.15.2 — 2026-09-23
+- **The win registers much sooner.** 0.15.0 waited until every brick in the world had stopped
+  moving, and non-free modes also waited for the reload, so a round could end about 3 s after
+  the building had visibly fallen. There is no longer a settle wait: the building-down check
+  runs in every state, and a win is declared once it has held for 0.5 s (`DOWN_HOLD`). After a
+  flattening volley, rounds now end in about 1.6 s instead of about 3.2 s.
+- To make that safe without waiting for the rubble, the stack test got stricter about what
+  counts as the *building*:
+  - A brick only extends a stack if it sits on the brick that was originally built under it,
+    so rubble that lands flat on other rubble no longer looks like a wall.
+  - Bricks still moving faster than 30 u/s (`MOVING_SPEED`) count as possibly standing, so a
+    toppling piece can't trigger a win in mid-fall.
+  - The upright tolerance widened from about 11° to about 27° (`UPRIGHT_SIN`), so a wall that
+    is merely leaning still counts.
+  Checked over 16 simulated games: no false wins where a standing stack reappeared (at most one
+  brick over the limit shifting afterwards), and the tower, shoved-wall, two-rows and rubble
+  cases in T42 still come out right.
+- Tests: T45 (the win registers in under 2 s while rubble is still moving) and T46 (a near
+  miss that rattles the building doesn't count as down).
+
+## 0.15.1 — 2026-09-23
+- **Rapid fire is much faster.** It used to halve the reload but still wait for each ball to
+  land, which worked out to about one shot every 1.7 s. It now has a 0.3 s cooldown
+  (`RAPID_COOLDOWN`) and can fire again while earlier balls are still flying: 17 shots in
+  5 s against Single's 3. The bar caption shows "RAPID · EVERY 0.3 S".
+- T34 now checks that the second Rapid shot is allowed after about 0.3 s with the first ball
+  still airborne, and that a too-early click is ignored.
+
+## 0.15.0 — 2026-09-23
+- Two extra bricks cap the dome on its centre columns: 142 bricks, 15 tall.
+- **Ground-breaking animation**: before a crater is cut, points inside it are sampled, and each
+  one that is still ground becomes a dirt clod sprayed up and out of the hole. The clods reuse
+  the brick-debris particles (gravity, bounce, fade). Bombs throw about twice as many. Blasts in
+  mid-air throw none.
+- **Building-down check rewritten** (replaces spec §8.5's "≤ 10 % of bricks still in place").
+  The old rule was measurably wrong both ways: one untouched 14-brick column (exactly 10 %)
+  counted as a win, a whole building shoved 16 units sideways counted as a win, and two flat
+  rows left did not. The building now counts as down once:
+  - every brick in the world has settled (below 30 u/s; bricks flung off the sides are
+    ignored), and
+  - no **intact stack** (upright bricks sitting squarely on each other) is taller than **4**
+    bricks (`DOWN_STACK`). Tilted rubble heaps don't form stacks, so they count as down.
+  The HUD shows "Tallest stack N (down at 4)", and the Controls page states the goal.
+- Brick shards and dirt clods share one `createChunk` helper (it replaces `createDebris`).
+- Tests: T42 (tower no / shoved wall no / two rows yes / rubble yes / still moving no), T43
+  (142 bricks, stack of 15, standing), T44 (ground hits throw clods, air blasts don't). T18 now
+  leaves a 3-brick stack for its win.
+
 ## 0.14.0 — 2026-09-23
 - The win card moved up, and a **🏆 TOP TIMES** card sits under it: the session's best 5 rounds,
   fastest first (rank, player BOZO, round with ✋ if tampered, time, shots). The round just won
