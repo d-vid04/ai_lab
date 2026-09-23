@@ -152,6 +152,9 @@
             <tr><td>Song on/off</td><td><kbd>F</kbd></td></tr>
             <tr><td>Reset</td><td><kbd>R</kbd>, the Reset button, or click the win card</td></tr>
             <tr><td>Pause menu</td><td><kbd>Esc</kbd></td></tr>
+            <tr><td>Fire mode</td><td><kbd>1</kbd>–<kbd>6</kbd> or the bar at the top</td></tr>
+            <tr><td>· unlocks</td><td>Rapid 1 win · Burst 2 · Bomb 4 · Spam &amp; Full auto 10</td></tr>
+            <tr><td>· full auto</td><td>Hold the mouse or <kbd>Space</kbd></td></tr>
           </tbody>
         </table>
       </div>
@@ -175,7 +178,7 @@
 "use strict";
 
 // ===== CONFIG =====
-const VERSION = "0.12.1";
+const VERSION = "0.14.0";
 
 const W = 1600;
 const H = 900;
@@ -232,6 +235,24 @@ const STAND_ANGLE = 0.3;          // rad; tilted more than this = knocked down
 
 const DEBRIS_LIFE = 1.5;
 const CLOUD_SPEED = 6;
+
+// Fire modes, unlocked by buildings knocked down this session. Keys 1–6 or the top-centre bar.
+const FIRE_MODES = [
+  { id: "single", name: "SINGLE", unlockAt: 0, reload: RELOAD_TIME },
+  { id: "rapid", name: "RAPID", unlockAt: 1, reload: RELOAD_TIME / 2 },
+  { id: "burst", name: "BURST", unlockAt: 2, reload: RELOAD_TIME, burst: 3 },
+  { id: "bomb", name: "BOMB", unlockAt: 4, reload: RELOAD_TIME, bomb: true },
+  { id: "spam", name: "SPAM", unlockAt: 10, reload: 0, bomb: true, free: true },
+  { id: "auto", name: "FULL AUTO", unlockAt: 10, reload: 0, bomb: true, free: true, auto: true },
+];
+const BURST_GAP = 0.12;           // s between the three balls of a burst
+const AUTO_INTERVAL = 0.1;        // s between bombs while full auto is held
+const BOMB_SCALE = 2;             // bomb crater and brick-destruction radius vs. a cannonball
+const BLAST_RING_LIFE = 0.45;     // s the bomb's flash ring takes to expand and fade
+const TOAST_TIME = 4;             // s an unlock / locked message stays under the fire bar
+const BOMB_WINDOW = 5;            // s: the "Uncle Sam" detector's sliding window...
+const BOMB_LIMIT = 7;             // ...and how many bombs inside it trigger the taunt
+const FIRE_SLOT = { w: 56, h: 40, gap: 8, y: 26 };
 const MASTER_VOLUME = 0.7;
 const SONG_VOLUME = 0.32;         // background song, still under the effects
 const SONG_MENU_DUCK = 0.2;       // song volume multiplier while the Esc menu is open
@@ -244,7 +265,8 @@ const RESET_BUTTON = { x: W - 28 - 136, y: 74, w: 136, h: 34 }; // under the sta
 const MENU_HINT = { x: W - 28 - 136, y: 118, w: 136, h: 34 };    // under the reset button
 const SONG_BUTTON = { x: W - 28 - 172, y: 162, w: 172, h: 34 };  // under the menu hint
 const TAMPER_BUTTON = { x: 28, y: 26, w: 196, h: 36 };
-const WIN_CARD = { x: (W - 500) / 2, y: (H - 176) / 2 - 60, w: 500, h: 176 };
+const WIN_CARD = { x: (W - 500) / 2, y: 136, w: 500, h: 176 };
+const LEADERBOARD_ROWS = 5;       // best times shown under the win card
 const PLAYER_NAME = "BOZO";       // whatever name they type, this is what the game calls them
 const WELCOME_MS = 1800;          // how long "WELCOME BOZO!" shows before play starts
 
@@ -397,7 +419,20 @@ function isSolid(terrain, x, y) {
   return true;
 }
 
+// Full-auto bombs often land in their own holes; a crater that sits inside an existing one, or
+// entirely above the ground, removes nothing, so it is skipped to keep the buckets short.
+function craterIsRedundant(terrain, cx, cy, r) {
+  let lowestSurface = Infinity;
+  for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(W, Math.ceil(cx + r)); x++) {
+    lowestSurface = Math.min(lowestSurface, terrain.surface[x]);
+  }
+  if (cy + r <= lowestSurface) return true;
+  const bucket = terrain.buckets.get(Math.floor(cx / BUCKET)) || [];
+  return bucket.some((c) => Math.hypot(cx - c.cx, cy - c.cy) + r <= c.r);
+}
+
 function addCrater(terrain, cx, cy, r) {
+  if (craterIsRedundant(terrain, cx, cy, r)) return;
   const crater = { cx, cy, r };
   terrain.craters.push(crater);
   // A crater goes into every bucket its x-span touches, so isSolid only needs bucket(x).
@@ -803,16 +838,16 @@ function applyImpulses(arb) {
 }
 
 // Fling nearby bricks away from an explosion, with a lift and a random spin.
-function blastBricks(world, x, y, rng) {
+function blastBricks(world, x, y, rng, reach, speed) {
   for (const b of world.bricks) {
     const dx = b.x - x;
     const dy = b.y - y;
     const d = Math.hypot(dx, dy);
-    if (d >= BLAST_PUSH_R) continue;
-    const f = 1 - d / BLAST_PUSH_R;
+    if (d >= reach) continue;
+    const f = 1 - d / reach;
     const inv = d > 0.001 ? 1 / d : 0;
-    b.vx += dx * inv * BLAST_PUSH_SPEED * f;
-    b.vy += dy * inv * BLAST_PUSH_SPEED * f - BLAST_LIFT * f;
+    b.vx += dx * inv * speed * f;
+    b.vy += dy * inv * speed * f - BLAST_LIFT * f;
     b.w += (rng() - 0.5) * 2 * BLAST_SPIN * f;
   }
 }
@@ -941,38 +976,42 @@ function computePreview(game) {
   return { points, steps, hit: null };
 }
 
-function updateProjectile(game, dt) {
-  const body = game.projectile;
-  if (!body) return;
-  const result = advanceBody(game, body, dt);
-  if (!result) return;
-  game.projectile = null;
-  if (result === "out") setState(game, "RELOADING");
-  else explode(game, body.x, body.y, result);
+// Several balls can be in the air (burst, spam, full auto); each flies and explodes on its own.
+function updateProjectiles(game, dt) {
+  const flying = [];
+  for (const body of game.projectiles) {
+    const result = advanceBody(game, body, dt);
+    if (!result) flying.push(body);
+    else if (result !== "out") explode(game, body.x, body.y, result, body.bomb);
+  }
+  game.projectiles = flying;
 }
 
-// Crater, destroyed bricks and flung bricks. Shared by cannonball hits and by digging in
-// Tamper mode; each caller plays its own sound.
-function blastAt(game, x, y) {
-  addCrater(game.terrain, x, y, CRATER_R);
-  destroyBricksNear(game, x, y);
-  blastBricks(game.world, x, y, game.rng);
+// Crater, destroyed bricks and flung bricks. Shared by cannonball hits, bombs (scale
+// BOMB_SCALE) and digging in Tamper mode; each caller plays its own sound.
+function blastAt(game, x, y, scale) {
+  addCrater(game.terrain, x, y, CRATER_R * scale);
+  destroyBricksNear(game, x, y, BLAST_R * scale);
+  blastBricks(game.world, x, y, game.rng, BLAST_PUSH_R * scale, BLAST_PUSH_SPEED * Math.sqrt(scale));
   // Cannon footing and brick support need no pass here: the rigid-body solver reads the
   // terrain every step, so the new crater takes effect on the next update.
 }
 
-// `hit` is "brick" or "ground" and only picks the sound.
-function explode(game, x, y, hit) {
-  if (game.audio) (hit === "brick" ? playBrickHitSound : playGroundHitSound)(game.audio, x);
-  blastAt(game, x, y);
+// `hit` is "brick" or "ground" and only picks the sound; bombs blow a much bigger hole.
+function explode(game, x, y, hit, bomb) {
+  if (game.audio) {
+    if (bomb) playBombSound(game.audio, x);
+    else (hit === "brick" ? playBrickHitSound : playGroundHitSound)(game.audio, x);
+  }
+  blastAt(game, x, y, bomb ? BOMB_SCALE : 1);
+  if (bomb) game.blasts.push({ x, y, age: 0 });
   game.preview = null;
-  setState(game, "RELOADING");
 }
 
-function destroyBricksNear(game, x, y) {
+function destroyBricksNear(game, x, y, radius) {
   const survivors = [];
   for (const b of game.world.bricks) {
-    if (Math.hypot(b.x - x, b.y - y) < BLAST_R) {
+    if (Math.hypot(b.x - x, b.y - y) < radius) {
       for (let i = 0; i < 3; i++) game.debris.push(createDebris(b, x, y, game.rng));
     } else {
       survivors.push(b);
@@ -997,6 +1036,11 @@ function createDebris(brick, bx, by, rng) {
     color: brick.color,
     age: 0,
   };
+}
+
+function updateBlasts(game, dt) {
+  for (const b of game.blasts) b.age += dt;
+  game.blasts = game.blasts.filter((b) => b.age < BLAST_RING_LIFE);
 }
 
 function updateDebris(game, dt) {
@@ -1044,7 +1088,7 @@ function tamperGrab(game, p) {
   }
   if (isSolid(game.terrain, p.x, p.y)) {
     if (game.audio) playDigSound(game.audio, p.x);
-    blastAt(game, p.x, p.y);
+    blastAt(game, p.x, p.y, 1);
     game.tampered = true;
   }
   return false;
@@ -1178,6 +1222,15 @@ function playFireSound(audio, x) {
   noiseBurst(audio, x, { type: "lowpass", from: 2400, to: 180, peak: 0.9, decay: 0.45 });
   tone(audio, x, { from: 120, to: 36, peak: 0.9, decay: 0.4 });
   tone(audio, x, { wave: "triangle", from: 420, to: 90, peak: 0.3, decay: 0.12 }); // sharp crack
+}
+
+// A bomb: the ground blast, deeper and much longer, with a rolling low rumble after it.
+function playBombSound(audio, x) {
+  const t = audio.ctx.currentTime;
+  noiseBurst(audio, x, { type: "lowpass", from: 2200, to: 60, peak: 1, decay: 1.3 });
+  tone(audio, x, { from: 70, to: 24, peak: 1, decay: 1.0 });
+  tone(audio, x, { wave: "triangle", from: 180, to: 40, peak: 0.4, decay: 0.4 });
+  noiseBurst(audio, x, { type: "lowpass", from: 500, to: 90, peak: 0.5, decay: 1.2, t0: t + 0.12 });
 }
 
 function playGroundHitSound(audio, x) {
@@ -1398,8 +1451,15 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
   return {
     seed, rng, terrain, world,
     cannon: world.cannon,
-    projectile: null,
+    projectiles: [],
+    burstLeft: 0,
+    burstTimer: 0,
+    burstBomb: false,
+    autoTimer: 0,
+    bombTimes: [],
+    uncleSam: false,
     debris: [],
+    blasts: [],
     clouds: createClouds(),
     state: "READY",
     stateTime: 0,
@@ -1409,13 +1469,14 @@ function createGame({ seed, withLayer = true, withBuilding = true }) {
     startBricks: world.bricks.length,
     preview: null,
     showPreview: true,
-    input: { keys: new Set(), hover: null, pointer: null, trail: [], tamperMode: false },
+    input: { keys: new Set(), hover: null, pointer: null, trail: [], tamperMode: false, firing: false },
     grab: null,
     tampered: false,
     view: null,
     audio: null,
     loop: { last: 0, acc: 0 },
-    session: { round: 1, records: [], songOn: true }, // in memory only: gone when the page closes
+    // In memory only: gone when the page closes. Survives resets.
+    session: { round: 1, records: [], songOn: true, fireMode: 0, toast: null },
   };
 }
 
@@ -1448,30 +1509,104 @@ function isBuildingDown(game) {
   return game.startBricks > 0 && countStanding(game.world) <= WIN_FRACTION * game.startBricks;
 }
 
-function fire(game) {
-  if (game.state !== "READY") return;
-  game.projectile = launchBody(game.cannon);
+function currentMode(game) {
+  return FIRE_MODES[game.session.fireMode];
+}
+
+function isModeUnlocked(game, index) {
+  return game.session.records.length >= FIRE_MODES[index].unlockAt;
+}
+
+function showToast(game, text) {
+  game.session.toast = { text, time: TOAST_TIME };
+}
+
+function selectFireMode(game, index) {
+  const mode = FIRE_MODES[index];
+  if (!isModeUnlocked(game, index)) {
+    showToast(game, `🔒 ${mode.name} UNLOCKS AFTER ${mode.unlockAt} WIN${mode.unlockAt === 1 ? "" : "S"}`);
+    return;
+  }
+  game.session.fireMode = index;
+}
+
+// Spam and full auto ignore the reload; everything else waits for READY.
+function canFire(game) {
+  if (game.state === "WON") return false;
+  return currentMode(game).free || game.state === "READY";
+}
+
+// One ball (or bomb) out of the muzzle; every ball counts as a shot.
+function launchShot(game, bomb) {
+  const body = launchBody(game.cannon);
+  body.bomb = bomb;
+  if (bomb) noteBomb(game);
+  game.projectiles.push(body);
   if (game.audio) playFireSound(game.audio, game.cannon.x);
   game.shots += 1;
+}
+
+// "Uncle Sam" detector: BOMB_LIMIT or more bombs inside any BOMB_WINDOW seconds of the round.
+function noteBomb(game) {
+  const now = game.elapsed;
+  game.bombTimes = game.bombTimes.filter((t) => now - t < BOMB_WINDOW);
+  game.bombTimes.push(now);
+  if (game.bombTimes.length >= BOMB_LIMIT) game.uncleSam = true;
+}
+
+function fire(game) {
+  if (!canFire(game)) return;
+  const mode = currentMode(game);
+  launchShot(game, Boolean(mode.bomb));
+  game.burstLeft = (mode.burst || 1) - 1;
+  game.burstBomb = Boolean(mode.bomb);
+  game.burstTimer = BURST_GAP;
+  game.autoTimer = AUTO_INTERVAL;
   setState(game, "IN_FLIGHT");
+}
+
+// The rest of a burst, and the stream of bombs while full auto is held down.
+function updateTrigger(game, dt) {
+  if (game.burstLeft > 0) {
+    game.burstTimer -= dt;
+    if (game.burstTimer <= 0) {
+      launchShot(game, game.burstBomb);
+      game.burstLeft -= 1;
+      game.burstTimer = BURST_GAP;
+    }
+  }
+  if (currentMode(game).auto && game.input.firing) {
+    game.autoTimer -= dt;
+    if (game.autoTimer <= 0) fire(game);
+  }
 }
 
 function updateState(game, dt) {
   game.stateTime += dt;
-  if (game.state === "RELOADING" && game.stateTime >= RELOAD_TIME) {
-    if (isBuildingDown(game)) winRound(game);
-    else setState(game, "READY");
-  } else if (game.state === "READY" && isBuildingDown(game)) {
-    winRound(game); // a late collapse after the reload still counts
+  if (game.state === "WON") return;
+  const reload = currentMode(game).reload;
+  if (game.state === "IN_FLIGHT" && !game.projectiles.length && !game.burstLeft) {
+    setState(game, reload > 0 ? "RELOADING" : "READY");
   }
+  if (game.state === "RELOADING" && game.stateTime >= reload) setState(game, "READY");
+  // Free-fire modes never pause between shots, so they can win mid-barrage.
+  if ((game.state === "READY" || currentMode(game).free) && isBuildingDown(game)) winRound(game);
 }
 
 // The clock runs from the first shot, so time spent lining up that shot is free.
 function winRound(game) {
   setState(game, "WON");
-  game.session.records.push({
+  game.input.firing = false;
+  const records = game.session.records;
+  records.push({
     round: game.session.round, time: game.elapsed, shots: game.shots, tampered: game.tampered,
   });
+  const unlocked = FIRE_MODES.map((m, i) => ({ m, key: i + 1 })).filter(({ m }) => m.unlockAt === records.length);
+  if (unlocked.length) {
+    const names = unlocked.map(({ m }) => m.name).join(" + ");
+    const keys = unlocked.map(({ key }) => key).join(" / ");
+    showToast(game, `🔓 ${names} UNLOCKED · PRESS ${keys}`);
+  }
 }
 
 function updateClouds(clouds, dt) {
@@ -1490,9 +1625,13 @@ function update(game, dt) {
   confineCannon(game.cannon);
   if (game.audio) playCollisionSounds(game.audio, game.world.impacts);
   removeLostBricks(game.world);
-  updateProjectile(game, dt);
+  updateTrigger(game, dt);
+  updateProjectiles(game, dt);
   updateDebris(game, dt);
+  updateBlasts(game, dt);
   updateState(game, dt);
+  const toast = game.session.toast;
+  if (toast) toast.time -= dt;
 }
 
 // ===== RENDER =====
@@ -1740,7 +1879,37 @@ function drawCannon(ctx, cannon) {
   drawWheel(ctx, cannon.x + 11, base - 9, 9);
 }
 
+// Cartoon bomb: black ball, highlight, fuse cap, curly fuse and a spark. Also used as an icon.
+function drawBomb(ctx, x, y, r) {
+  ctx.lineJoin = "round";
+  circlePath(ctx, x, y, r);
+  ctx.fillStyle = "#1b1f2a";
+  ctx.fill();
+  ctx.strokeStyle = COLORS.ink;
+  ctx.lineWidth = Math.max(1, r * 0.22);
+  ctx.stroke();
+  circlePath(ctx, x - r * 0.35, y - r * 0.35, r * 0.28);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.fill();
+  roundRectPath(ctx, x + r * 0.35, y - r * 1.05, r * 0.55, r * 0.45, r * 0.1);
+  ctx.fillStyle = "#6b778c";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + r * 0.62, y - r * 1.05);
+  ctx.quadraticCurveTo(x + r * 0.7, y - r * 1.6, x + r * 1.15, y - r * 1.55);
+  ctx.strokeStyle = COLORS.woodInk;
+  ctx.lineWidth = Math.max(1, r * 0.16);
+  ctx.stroke();
+  circlePath(ctx, x + r * 1.2, y - r * 1.58, r * 0.3);
+  ctx.fillStyle = COLORS.brass;
+  ctx.fill();
+}
+
 function drawBall(ctx, body) {
+  if (body.bomb) {
+    drawBomb(ctx, body.x, body.y, body.r + 1.5);
+    return;
+  }
   circlePath(ctx, body.x, body.y, body.r);
   ctx.fillStyle = COLORS.navy;
   ctx.fill();
@@ -1750,6 +1919,21 @@ function drawBall(ctx, body) {
   circlePath(ctx, body.x - 2.4, body.y - 2.4, 2.2);
   ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   ctx.fill();
+}
+
+// A bomb's hot flash and an expanding shock ring.
+function drawBlasts(ctx, blasts) {
+  for (const b of blasts) {
+    const t = b.age / BLAST_RING_LIFE;
+    const r = CRATER_R * BOMB_SCALE * (0.3 + 1.3 * t);
+    circlePath(ctx, b.x, b.y, r * 0.7);
+    ctx.fillStyle = `rgba(255, 236, 170, ${0.55 * (1 - t) ** 2})`;
+    ctx.fill();
+    circlePath(ctx, b.x, b.y, r);
+    ctx.strokeStyle = `rgba(231, 111, 81, ${0.8 * (1 - t)})`;
+    ctx.lineWidth = 10 * (1 - t) + 2;
+    ctx.stroke();
+  }
 }
 
 function drawDebris(ctx, debris) {
@@ -1854,6 +2038,126 @@ function drawMenuHint(ctx, hover) {
 function drawSongButton(ctx, on, hover) {
   drawPillBackground(ctx, SONG_BUTTON, hover);
   drawKeyLabel(ctx, SONG_BUTTON, "F", `♪ SONG · ${on ? "ON" : "OFF"}`, "#eef2f4", on ? COLORS.navy : "#8a94a6");
+}
+
+function fireSlotRect(index) {
+  const total = FIRE_MODES.length * FIRE_SLOT.w + (FIRE_MODES.length - 1) * FIRE_SLOT.gap;
+  const x0 = (W - total) / 2;
+  return { x: x0 + index * (FIRE_SLOT.w + FIRE_SLOT.gap), y: FIRE_SLOT.y, w: FIRE_SLOT.w, h: FIRE_SLOT.h };
+}
+
+function drawLock(ctx, x, y) {
+  ctx.beginPath();
+  ctx.arc(x, y - 3, 5, Math.PI, 0);
+  ctx.strokeStyle = "#8a94a6";
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+  roundRectPath(ctx, x - 7.5, y - 3, 15, 11, 2.5);
+  ctx.fillStyle = "#8a94a6";
+  ctx.fill();
+  circlePath(ctx, x, y + 2, 1.6);
+  ctx.fillStyle = "#eef0f2";
+  ctx.fill();
+}
+
+function drawDot(ctx, x, y, r) {
+  circlePath(ctx, x, y, r);
+  ctx.fillStyle = COLORS.navy;
+  ctx.fill();
+}
+
+// Small picture of each fire mode, centred on (x, y).
+function drawModeIcon(ctx, id, x, y) {
+  if (id === "single") drawDot(ctx, x, y, 5);
+  else if (id === "rapid") {
+    drawDot(ctx, x + 7, y, 5);
+    ctx.strokeStyle = COLORS.navy;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    for (const [dy, len] of [[-4, 8], [0, 12], [4, 8]]) {
+      ctx.beginPath();
+      ctx.moveTo(x - 1, y + dy);
+      ctx.lineTo(x - 1 - len, y + dy);
+      ctx.stroke();
+    }
+  } else if (id === "burst") {
+    for (const dx of [-11, 0, 11]) drawDot(ctx, x + dx, y, 4);
+  } else if (id === "bomb") drawBomb(ctx, x - 2, y + 2, 7);
+  else if (id === "spam") {
+    for (const [dx, dy] of [[-9, 4], [0, -3], [9, 4]]) drawBomb(ctx, x + dx - 1, y + dy + 1, 4.2);
+  } else if (id === "auto") {
+    drawBomb(ctx, x - 8, y + 2, 5.5);
+    ctx.strokeStyle = COLORS.navy;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    for (const dx of [4, 11]) {
+      ctx.beginPath();
+      ctx.moveTo(x + dx, y - 5);
+      ctx.lineTo(x + dx + 5, y);
+      ctx.lineTo(x + dx, y + 5);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawFireSlot(ctx, game, index, hover) {
+  const r = fireSlotRect(index);
+  const unlocked = isModeUnlocked(game, index);
+  const selected = game.session.fireMode === index;
+  roundRectPath(ctx, r.x, r.y, r.w, r.h, 10);
+  ctx.fillStyle = !unlocked ? "#eef0f2" : selected ? "#fdf1e7" : hover ? "#f7f9fa" : "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = selected ? "#e76f51" : hover ? "rgba(231, 111, 81, 0.6)" : "rgba(31, 45, 74, 0.15)";
+  ctx.lineWidth = selected ? 2.2 : 1.2;
+  ctx.stroke();
+  ctx.font = `700 10px ${FONT}`;
+  ctx.fillStyle = unlocked ? "#51607a" : "#9aa5a9";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(index + 1), r.x + 6, r.y + 9);
+  if (unlocked) drawModeIcon(ctx, FIRE_MODES[index].id, r.x + r.w / 2, r.y + r.h / 2 + 2);
+  else drawLock(ctx, r.x + r.w / 2, r.y + r.h / 2 + 1);
+}
+
+// The line under the bar: the hovered mode (and how to unlock it), else the current mode.
+function fireBarCaption(game) {
+  const hovered = /^fire(\d)$/.exec(game.input.hover || "");
+  const index = hovered ? Number(hovered[1]) : game.session.fireMode;
+  const mode = FIRE_MODES[index];
+  if (!isModeUnlocked(game, index)) {
+    return `🔒 ${mode.name} · WIN ${mode.unlockAt} ROUND${mode.unlockAt === 1 ? "" : "S"} TO UNLOCK (${game.session.records.length}/${mode.unlockAt})`;
+  }
+  const how = mode.auto ? " · HOLD TO FIRE" : mode.free ? " · EVERY CLICK FIRES" : "";
+  return `${hovered ? `PRESS ${index + 1} · ` : "FIRE MODE: "}${mode.name}${how}`;
+}
+
+function drawFireBar(ctx, game) {
+  const first = fireSlotRect(0);
+  const last = fireSlotRect(FIRE_MODES.length - 1);
+  const pad = 6;
+  const bar = { x: first.x - pad, y: first.y - pad, w: last.x + last.w - first.x + pad * 2, h: first.h + pad * 2 };
+  ctx.fillStyle = "rgba(15, 27, 45, 0.08)";
+  roundRectPath(ctx, bar.x, bar.y + 3, bar.w, bar.h, 14);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+  roundRectPath(ctx, bar.x, bar.y, bar.w, bar.h, 14);
+  ctx.fill();
+  FIRE_MODES.forEach((_, i) => drawFireSlot(ctx, game, i, game.input.hover === `fire${i}`));
+  ctx.font = `700 13px ${FONT}`;
+  ctx.letterSpacing = "1.2px";
+  ctx.fillStyle = COLORS.navy;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(fireBarCaption(game), W / 2, bar.y + bar.h + 16);
+  const toast = game.session.toast;
+  if (toast && toast.time > 0) {
+    ctx.globalAlpha = Math.min(1, toast.time / 0.5);
+    ctx.font = `800 16px ${FONT}`;
+    ctx.fillStyle = "#e76f51";
+    ctx.fillText(toast.text, W / 2, bar.y + bar.h + 42);
+    ctx.globalAlpha = 1;
+  }
+  ctx.letterSpacing = "0px";
 }
 
 function drawTamperButton(ctx, active, hover) {
@@ -1972,7 +2276,77 @@ function winTaunt(shots) {
   return "UNINSTALL ALREADY BOZO!";
 }
 
-function drawWinCard(ctx, shots, seconds, hover) {
+// The Uncle Sam taunt beats the shot-count one.
+function roundTaunt(game) {
+  return game.uncleSam ? "UNCLE SAM IS CALLING YOUR NAME!" : winTaunt(game.shots);
+}
+
+// Best times first (1-based ranks). The round just won is always shown: if it missed the
+// top LEADERBOARD_ROWS it comes back as `extra` with its real rank.
+function leaderboardRows(records) {
+  const ranked = [...records].sort((a, b) => a.time - b.time).map((r, i) => ({ r, rank: i + 1 }));
+  const rows = ranked.slice(0, LEADERBOARD_ROWS);
+  const current = records[records.length - 1];
+  const extra = rows.some((row) => row.r === current) ? null : ranked.find((row) => row.r === current);
+  return { rows, extra, current };
+}
+
+const LEADERBOARD_COLUMNS = [
+  { label: "RANK", x: 30, cell: (row) => `#${row.rank}` },
+  { label: "PLAYER", x: 100, cell: () => PLAYER_NAME },
+  { label: "ROUND", x: 210, cell: (row) => `${row.r.round}${row.r.tampered ? " ✋" : ""}` },
+  { label: "TIME", x: 310, cell: (row) => formatTime(row.r.time) },
+  { label: "SHOTS", x: 410, cell: (row) => String(row.r.shots) },
+];
+
+function drawLeaderboardRow(ctx, row, y, isCurrent) {
+  const { x, w } = WIN_CARD;
+  if (isCurrent) {
+    roundRectPath(ctx, x + 16, y - 13, w - 32, 26, 8);
+    ctx.fillStyle = "#fdf1e7";
+    ctx.fill();
+  }
+  ctx.font = `${isCurrent ? 800 : 600} 16px ${FONT}`;
+  ctx.fillStyle = isCurrent ? "#c4532f" : COLORS.navy;
+  for (const col of LEADERBOARD_COLUMNS) ctx.fillText(col.cell(row), x + col.x, y + 1);
+}
+
+function drawLeaderboard(ctx, records) {
+  const { rows, extra, current } = leaderboardRows(records);
+  const rowH = 28;
+  const x = WIN_CARD.x;
+  const y = WIN_CARD.y + WIN_CARD.h + 14;
+  const h = 74 + rowH * rows.length + (extra ? rowH + 10 : 0);
+  ctx.fillStyle = "rgba(15, 27, 45, 0.12)";
+  roundRectPath(ctx, x, y + 6, WIN_CARD.w, h, 22);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  roundRectPath(ctx, x, y, WIN_CARD.w, h, 22);
+  ctx.fill();
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = `800 13px ${FONT}`;
+  ctx.letterSpacing = "1.6px";
+  ctx.fillStyle = COLORS.navy;
+  ctx.fillText("🏆 TOP TIMES", x + 30, y + 24);
+  ctx.font = `700 11px ${FONT}`;
+  ctx.fillStyle = "#6b778c";
+  for (const col of LEADERBOARD_COLUMNS) ctx.fillText(col.label, x + col.x, y + 50);
+  ctx.letterSpacing = "0px";
+  rows.forEach((row, i) => drawLeaderboardRow(ctx, row, y + 76 + i * rowH, row.r === current));
+  if (!extra) return;
+  const ey = y + 76 + rows.length * rowH + 10;
+  ctx.strokeStyle = "#edf0f2";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(x + 24, ey - 19);
+  ctx.lineTo(x + WIN_CARD.w - 24, ey - 19);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  drawLeaderboardRow(ctx, extra, ey, true);
+}
+
+function drawWinCard(ctx, taunt, shots, seconds, hover) {
   const { x, y, w, h } = WIN_CARD;
   ctx.fillStyle = "rgba(15, 27, 45, 0.12)";
   roundRectPath(ctx, x, y + 6, w, h, 22);
@@ -1988,9 +2362,11 @@ function drawWinCard(ctx, shots, seconds, hover) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#e76f51";
-  ctx.font = `900 24px ${FONT}`;
   ctx.letterSpacing = "1.5px";
-  ctx.fillText(winTaunt(shots), W / 2, y + 42);
+  ctx.font = `900 24px ${FONT}`;
+  const size = Math.min(24, (24 * (w - 60)) / ctx.measureText(taunt).width); // long taunts shrink to fit
+  ctx.font = `900 ${size}px ${FONT}`;
+  ctx.fillText(taunt, W / 2, y + 42);
   ctx.letterSpacing = "0px";
   ctx.fillStyle = COLORS.navy;
   ctx.font = `800 30px ${FONT}`;
@@ -2010,17 +2386,22 @@ function render(game) {
   ctx.drawImage(game.terrain.layer, 0, 0, W, H);
   drawBricks(ctx, game.world.bricks, tamperHighlights(game));
   drawCannon(ctx, game.cannon);
-  if (game.projectile) drawBall(ctx, game.projectile);
+  for (const body of game.projectiles) drawBall(ctx, body);
+  drawBlasts(ctx, game.blasts);
   drawDebris(ctx, game.debris);
-  if (game.state === "READY" && game.showPreview && game.preview) drawPreview(ctx, game.preview);
+  if (canFire(game) && game.showPreview && game.preview) drawPreview(ctx, game.preview);
   drawStatusPill(ctx, game.paused ? "PAUSED" : game.state);
   const hover = game.input.hover;
   drawResetButton(ctx, hover === "reset");
   drawMenuHint(ctx, hover === "menu");
   drawSongButton(ctx, game.session.songOn, hover === "song");
+  drawFireBar(ctx, game);
   drawTamperButton(ctx, game.input.tamperMode, hover === "tamper");
   drawHud(ctx, game);
-  if (game.state === "WON") drawWinCard(ctx, game.shots, game.elapsed, hover === "win");
+  if (game.state === "WON") {
+    drawWinCard(ctx, roundTaunt(game), game.shots, game.elapsed, hover === "win");
+    drawLeaderboard(ctx, game.session.records);
+  }
   drawTamperOverlay(ctx, game);
 }
 
@@ -2063,8 +2444,12 @@ function onKeyDown(e) {
   if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
   if (KEY_ACTIONS[e.code]) game.input.keys.add(KEY_ACTIONS[e.code]);
   if (e.repeat) return;
-  if (e.code === "Space") fire(game);
-  else if (e.code === "KeyR") game = resetGame(game);
+  const modeKey = /^(Digit|Numpad)([1-6])$/.exec(e.code);
+  if (modeKey) selectFireMode(game, Number(modeKey[2]) - 1);
+  else if (e.code === "Space") {
+    fire(game);
+    game.input.firing = true; // held Space keeps full auto going
+  } else if (e.code === "KeyR") game = resetGame(game);
   else if (e.code === "KeyT") toggleTamper(game);
   else if (e.code === "KeyF") toggleSong(game);
   else if (e.code === "KeyP") game.showPreview = !game.showPreview;
@@ -2073,6 +2458,7 @@ function onKeyDown(e) {
 
 function onKeyUp(e) {
   if (KEY_ACTIONS[e.code]) game.input.keys.delete(KEY_ACTIONS[e.code]);
+  if (e.code === "Space") game.input.firing = false;
 }
 
 function isInRect(p, r) {
@@ -2081,6 +2467,8 @@ function isInRect(p, r) {
 
 // Which on-canvas button (if any) is under the pointer.
 function uiTargetAt(game, p) {
+  const slot = FIRE_MODES.findIndex((_, i) => isInRect(p, fireSlotRect(i)));
+  if (slot >= 0) return `fire${slot}`;
   if (isInRect(p, TAMPER_BUTTON)) return "tamper";
   if (isInRect(p, RESET_BUTTON)) return "reset";
   if (isInRect(p, MENU_HINT)) return "menu";
@@ -2090,7 +2478,8 @@ function uiTargetAt(game, p) {
 }
 
 function onUiClick(target) {
-  if (target === "tamper") toggleTamper(game);
+  if (target.startsWith("fire")) selectFireMode(game, Number(target.slice(4)));
+  else if (target === "tamper") toggleTamper(game);
   else if (target === "song") toggleSong(game);
   else if (target === "menu") openMenu();
   else game = resetGame(game); // the reset button or the win card
@@ -2136,12 +2525,17 @@ function onPointerDown(canvas, e) {
   }
   aimAtPoint(game.cannon, p.x, p.y);
   fire(game);
+  game.input.firing = true; // held mouse keeps full auto going
+  if (currentMode(game).auto) canvas.setPointerCapture(e.pointerId);
 }
 
 function installInput(canvas) {
   canvas.addEventListener("pointermove", (e) => onPointerMove(canvas, e));
   canvas.addEventListener("pointerdown", (e) => onPointerDown(canvas, e));
-  const release = (e) => tamperRelease(game, pointerVelocity(game.input, e.timeStamp));
+  const release = (e) => {
+    game.input.firing = false;
+    tamperRelease(game, pointerVelocity(game.input, e.timeStamp));
+  };
   canvas.addEventListener("pointerup", release);
   canvas.addEventListener("pointercancel", release);
   canvas.addEventListener("pointerleave", () => {
@@ -2151,7 +2545,10 @@ function installInput(canvas) {
   });
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
-  window.addEventListener("blur", () => game.input.keys.clear());
+  window.addEventListener("blur", () => {
+    game.input.keys.clear();
+    game.input.firing = false;
+  });
   // A hidden tab stops the frame loop, which is what normally turns the whoosh off; silence it
   // here instead. The loop starts it again on return if the ball is still flying.
   document.addEventListener("visibilitychange", () => {
@@ -2167,6 +2564,7 @@ function openMenu() {
   game.paused = true;
   game.input.keys.clear();
   game.input.hover = null;
+  game.input.firing = false;
   tamperRelease(game, { vx: 0, vy: 0 });
   showMenuView("main");
   document.getElementById("menu").hidden = false;
@@ -2292,9 +2690,11 @@ function frame(now) {
     loop.acc -= DT;
   }
   // Bricks can move every step, so the arc is simply recomputed each frame while aiming.
-  if (game.state === "READY" && game.showPreview) game.preview = computePreview(game);
+  if (canFire(game) && game.showPreview) game.preview = computePreview(game);
   if (game.audio) {
-    syncWhizz(game.audio, game.paused ? null : game.projectile); // the ball is frozen while paused
+    // Follows the newest ball; silent while paused because the balls are frozen.
+    const newest = game.projectiles[game.projectiles.length - 1];
+    syncWhizz(game.audio, game.paused || !newest ? null : newest);
     syncSong(game.audio, game.session.songOn, game.paused);
   }
   render(game);
@@ -2459,7 +2859,7 @@ const BRICK_TESTS = [
     g.input.tamperMode = true;
     const r = resetGame(g);
     const ok = r.state === "READY" && r.shots === 0 && r.terrain.craters.length === 0 &&
-      r.debris.length === 0 && !r.projectile && countStanding(r.world) === r.startBricks &&
+      r.debris.length === 0 && !r.projectiles.length && countStanding(r.world) === r.startBricks &&
       r.startBricks > 0 && r.showPreview === false && r.input === g.input && !r.input.tamperMode;
     return check(ok, "READY, 0 shots, 0 craters, all bricks standing, input kept, Tamper off",
       `${r.state}, ${r.shots} shots, ${r.terrain.craters.length} craters, ` +
@@ -2639,8 +3039,131 @@ const TAMPER_TESTS = [
   }],
 ];
 
+// Pretend the player has already knocked down `wins` buildings this session.
+function withWins(g, wins) {
+  for (let i = 0; i < wins; i++) g.session.records.push({ round: i + 1, time: 10, shots: 3, tampered: false });
+  return g;
+}
+
+function flyUntilSettled(g, maxSteps) {
+  for (let i = 0; i < maxSteps && (g.projectiles.length || g.burstLeft); i++) update(g, DT);
+}
+
+const FIRE_MODE_TESTS = [
+  ["T33", "Fire modes unlock after 0 / 1 / 2 / 4 / 10 / 10 wins; locked ones can't be picked", () => {
+    const unlockedAt = (wins) => FIRE_MODES.map((_, i) => isModeUnlocked(withWins(testGame(), wins), i));
+    const three = withWins(testGame(), 3);
+    selectFireMode(three, 3);
+    const lockedStays = three.session.fireMode === 0 && three.session.toast !== null;
+    selectFireMode(three, 2);
+    const ok = unlockedAt(0).join() === "true,false,false,false,false,false" &&
+      unlockedAt(1).join() === "true,true,false,false,false,false" &&
+      unlockedAt(4).join() === "true,true,true,true,false,false" &&
+      unlockedAt(10).every(Boolean) && lockedStays && three.session.fireMode === 2;
+    return check(ok, "thresholds 0,1,2,4,10,10; bomb refused at 3 wins, burst accepted",
+      `at 4 wins ${unlockedAt(4).join()}, locked stays ${lockedStays}, picked ${three.session.fireMode}`);
+  }],
+  ["T34", "Rapid fire reloads twice as fast", () => {
+    const g = withWins(testGame(), 1);
+    selectFireMode(g, 1);
+    setAim(g.cannon, 25, 0.55);
+    fire(g);
+    flyUntilSettled(g, 2000);
+    let steps = 0;
+    while (g.state === "RELOADING" && steps < 500) { update(g, DT); steps += 1; }
+    const seconds = steps * DT;
+    return check(Math.abs(seconds - RELOAD_TIME / 2) < 0.05, `≈ ${RELOAD_TIME / 2} s reload`, `${seconds.toFixed(3)} s`);
+  }],
+  ["T35", "Burst fires three balls in a row, then reloads normally", () => {
+    const g = withWins(testGame(), 2);
+    selectFireMode(g, 2);
+    setAim(g.cannon, 25, 0.55);
+    fire(g);
+    let most = 0;
+    for (let i = 0; i < 2000 && (g.projectiles.length || g.burstLeft); i++) {
+      update(g, DT);
+      most = Math.max(most, g.projectiles.length);
+    }
+    const ok = g.shots === 3 && most >= 2 && g.state === "RELOADING";
+    return check(ok, "3 shots, up to 3 in the air, then RELOADING", `${g.shots} shots, max ${most} airborne, ${g.state}`);
+  }],
+  ["T36", "Bombs blow a crater twice the size of a cannonball's", () => {
+    const g = withWins(testGame(), 4);
+    explode(g, 800, surfaceY(g.terrain, 800), "ground", true);
+    const c = g.terrain.craters[0];
+    return check(c && c.r === CRATER_R * BOMB_SCALE && g.blasts.length === 1, `r ${CRATER_R * BOMB_SCALE}, 1 flash ring`,
+      `r ${c && c.r}, ${g.blasts.length} ring(s)`);
+  }],
+  ["T37", "Spam: every click fires a bomb, even with balls still in the air", () => {
+    const g = withWins(testGame(), 10);
+    selectFireMode(g, 4);
+    fire(g);
+    update(g, DT);
+    fire(g);
+    fire(g);
+    const ok = g.projectiles.length === 3 && g.projectiles.every((b) => b.bomb) && g.shots === 3;
+    return check(ok, "3 bombs airborne", `${g.projectiles.length} airborne, bombs ${g.projectiles.every((b) => b.bomb)}`);
+  }],
+  ["T38", "Full auto: holding the trigger streams bombs; letting go stops", () => {
+    const g = withWins(testGame(), 10);
+    selectFireMode(g, 5);
+    fire(g);
+    g.input.firing = true;
+    for (let i = 0; i < 60; i++) update(g, DT); // 0.5 s held
+    const held = g.shots;
+    g.input.firing = false;
+    for (let i = 0; i < 60; i++) update(g, DT);
+    const ok = held >= 5 && held <= 7 && g.shots === held;
+    return check(ok, "about 6 bombs in 0.5 s, none after release", `${held} while held, ${g.shots} after release`);
+  }],
+  ["T39", "Winning unlocks the next mode and says so; the choice survives a reset", () => {
+    const g = withWins(testGame(true), 0);
+    fire(g);
+    for (let i = 0; i < 240; i++) update(g, DT);
+    g.world.bricks = g.world.bricks.slice(0, 3);
+    for (let i = 0; i < 240 && g.state !== "WON"; i++) update(g, DT);
+    const toast = g.session.toast ? g.session.toast.text : "";
+    selectFireMode(g, 1);
+    const r = resetGame(g);
+    const ok = g.state === "WON" && toast.includes("RAPID") && r.session.fireMode === 1;
+    return check(ok, "WON, 'RAPID … UNLOCKED' toast, rapid kept after reset",
+      `${g.state}, "${toast}", mode after reset ${r.session.fireMode}`);
+  }],
+  ["T40", "Uncle Sam: 7 bombs inside 5 s flags the round; 6 don't, and 1 per second never does", () => {
+    const fast = withWins(testGame(), 10);
+    selectFireMode(fast, 4);
+    for (let i = 0; i < 6; i++) {
+      fire(fast);
+      for (let k = 0; k < 60; k++) update(fast, DT); // 0.5 s apart
+    }
+    const afterSix = fast.uncleSam;
+    fire(fast);
+    const slow = withWins(testGame(), 10);
+    selectFireMode(slow, 4);
+    for (let i = 0; i < 12; i++) {
+      fire(slow);
+      for (let k = 0; k < 120; k++) update(slow, DT); // 1 s apart
+    }
+    const ok = !afterSix && fast.uncleSam && !slow.uncleSam &&
+      roundTaunt(fast) === "UNCLE SAM IS CALLING YOUR NAME!" && roundTaunt(slow) === winTaunt(slow.shots);
+    return check(ok, "not at 6, flagged at 7, never at 1/s; taunt overrides",
+      `6 → ${afterSix}, 7 → ${fast.uncleSam}, 1/s → ${slow.uncleSam}, taunt "${roundTaunt(fast)}"`);
+  }],
+  ["T41", "Leaderboard: fastest first, top 5, and the round just won is always shown", () => {
+    const times = [9, 4, 12, 6, 3, 8, 15];
+    const records = times.map((time, i) => ({ round: i + 1, time, shots: 2, tampered: false }));
+    const slowest = leaderboardRows(records);
+    const fastest = leaderboardRows([...records, { round: 8, time: 1, shots: 1, tampered: false }]);
+    const ok = slowest.rows.map((row) => row.r.time).join() === "3,4,6,8,9" &&
+      slowest.extra && slowest.extra.rank === 7 && slowest.extra.r.round === 7 &&
+      fastest.rows[0].r.round === 8 && fastest.extra === null;
+    return check(ok, "3,4,6,8,9 + round 7 as #7; a new best is #1 with no extra row",
+      `${slowest.rows.map((row) => row.r.time).join()}, extra #${slowest.extra && slowest.extra.rank}, new best round ${fastest.rows[0].r.round}`);
+  }],
+];
+
 function runSelfTests() {
-  return [...TERRAIN_TESTS, ...FLIGHT_TESTS, ...BRICK_TESTS, ...TAMPER_TESTS].map(([id, name, fn]) => {
+  return [...TERRAIN_TESTS, ...FLIGHT_TESTS, ...BRICK_TESTS, ...TAMPER_TESTS, ...FIRE_MODE_TESTS].map(([id, name, fn]) => {
     let r;
     try {
       r = fn();

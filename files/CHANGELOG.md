@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## 0.14.0 — 2026-09-23
+- The win card moved up, and a **🏆 TOP TIMES** card sits under it: the session's best 5 rounds,
+  fastest first (rank, player BOZO, round with ✋ if tampered, time, shots). The round just won
+  is highlighted. If it missed the top 5, it is added below a divider with its real rank.
+- **"Uncle Sam" detector**: every bomb launch is timed. If 7 or more bombs (`BOMB_LIMIT`) are
+  fired inside any 5-second window (`BOMB_WINDOW`) during a round, the win taunt becomes "UNCLE
+  SAM IS CALLING YOUR NAME!" whatever the shot count. Only bombs count, not cannonballs, so in
+  practice it comes from Spam clicking or Full auto.
+- Long taunts shrink to fit the win card.
+- Tests T40 (the detector triggers at 7-in-5 s, not at 6 or at 1 per second, and overrides the
+  taunt) and T41 (leaderboard order, top 5, the current round shown with its rank).
+
+## 0.13.0 — 2026-09-22
+- **Fire modes**, unlocked by buildings knocked down this session, chosen with keys **1–6** or
+  the new bar at the top centre. Each slot shows its key number and an icon; locked slots show
+  a padlock, and hovering one says how many wins it needs. A toast under the bar announces each
+  unlock, and the chosen mode survives resets.
+  1. SINGLE (•): as before.
+  2. RAPID (• with speed lines), 1 win: half the reload time.
+  3. BURST (•••), 2 wins: three balls 0.12 s apart, then the normal reload.
+  4. BOMB (bomb icon), 4 wins: black bombs with a lit fuse. Crater and brick-destruction radius
+     ×2, a wider and stronger fling, a flash and shock ring, and a deeper, longer boom.
+  5. SPAM (three bombs), 10 wins: every click fires a bomb, with no reload.
+  6. FULL AUTO (bomb »), 10 wins: holding the mouse or Space streams bombs every 0.1 s.
+- Several balls can now be in the air at once (`game.projectiles`). The state machine waits
+  for all of them to land and then reloads for the current mode. Free-fire modes can win
+  mid-barrage. Every ball counts as a shot.
+- Craters that can't change the ground (inside an existing crater, or entirely above the
+  surface) are skipped, so sustained full auto stays around 1 ms per physics step.
+- The Controls page lists the fire modes, unlocks and full-auto hold.
+- Tests T33–T39: unlock thresholds and locked selection, rapid reload, burst, bomb crater
+  size, spam, full auto hold/release, the unlock toast, and the mode surviving a reset.
+
 ## 0.12.1 — 2026-09-22
 - Fix: the in-flight whoosh kept playing after switching tabs while the ball was in the air
   (a hidden tab stops the frame loop that normally silences it). It now stops when the tab is
